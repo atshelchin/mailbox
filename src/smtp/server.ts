@@ -206,7 +206,10 @@ export function createSMTPServer(): SMTPServer {
   const server = new SMTPServer({
     // No authentication required for receiving mail
     authOptional: true,
-    disabledCommands: ["AUTH"],
+    disabledCommands: ["AUTH", "STARTTLS"],
+
+    // Disable TLS requirement (receiving mail on port 25 doesn't need TLS)
+    secure: false,
 
     // Size limit for incoming emails
     size: config.maxEmailSize,
