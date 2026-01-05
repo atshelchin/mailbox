@@ -106,31 +106,50 @@ function setSessionCookie(cookie: { session: { set: (opts: object) => void } }, 
 // ============================================================================
 
 /**
- * Get the authenticated user from a session cookie
+ * Extract token from Authorization header
+ * @param authHeader - The Authorization header value
+ * @returns The token or null
+ */
+function extractBearerToken(authHeader: string | null | undefined): string | null {
+  if (!authHeader) return null;
+  const match = authHeader.match(/^Bearer\s+(.+)$/i);
+  return match ? match[1] : null;
+}
+
+/**
+ * Get the authenticated user from session cookie or Authorization header
  *
  * @description Validates the session and returns the user info if valid.
+ * Supports both cookie-based sessions and Bearer token authentication.
  * Automatically cleans up expired sessions.
  *
- * @param sessionId - The session ID from the cookie
+ * @param sessionId - The session ID from the cookie (optional)
+ * @param authHeader - The Authorization header value (optional)
  * @returns The authenticated user or null if not authenticated
  *
  * @example
  * ```typescript
+ * // Cookie-based auth
  * const user = getAuthUser(cookie.session.value);
- * if (!user) {
- *   return { success: false, error: "Unauthorized" };
- * }
+ *
+ * // Token-based auth
+ * const user = getAuthUser(undefined, headers.authorization);
+ *
+ * // Both (cookie takes precedence)
+ * const user = getAuthUser(cookie.session.value, headers.authorization);
  * ```
  */
-export function getAuthUser(sessionId: string | undefined): AuthUser | null {
-  if (!sessionId) return null;
+export function getAuthUser(sessionId: string | undefined, authHeader?: string | null): AuthUser | null {
+  // Try cookie first, then Authorization header
+  const token = sessionId || extractBearerToken(authHeader);
+  if (!token) return null;
 
-  const session = sessionRepository.findById(sessionId);
+  const session = sessionRepository.findById(token);
   if (!session) return null;
 
   // Check if session is expired
   if (session.expires_at < now()) {
-    sessionRepository.delete(sessionId);
+    sessionRepository.delete(token);
     return null;
   }
 
@@ -282,6 +301,7 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
         return {
           success: true,
           user: { id: userId, username },
+          token: sessionId, // Return token for clients that can't use cookies
         };
       } catch (error) {
         return { success: false, error: String(error) };
@@ -466,6 +486,7 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
         return {
           success: true,
           user: { id: resolvedUserId, username: user.username },
+          token: sessionId, // Return token for clients that can't use cookies
         };
       } catch (error) {
         return { success: false, error: String(error) };
@@ -503,8 +524,8 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
    * @route GET /api/auth/me
    * @returns Current user info or error if not authenticated
    */
-  .get("/me", ({ cookie }) => {
-    const user = getAuthUser(cookie.session.value);
+  .get("/me", ({ cookie, headers }) => {
+    const user = getAuthUser(cookie.session.value, headers.authorization);
     if (!user) {
       return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
     }

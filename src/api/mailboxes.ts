@@ -55,8 +55,8 @@ export const mailboxRoutes = new Elysia({ prefix: "/mailboxes" })
    */
   .get(
     "/",
-    ({ cookie, query }) => {
-      const user = getAuthUser(cookie.session.value as string | undefined);
+    ({ cookie, query, headers }) => {
+      const user = getAuthUser(cookie.session.value as string | undefined, headers.authorization);
       if (!user) {
         return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
       }
@@ -112,8 +112,8 @@ export const mailboxRoutes = new Elysia({ prefix: "/mailboxes" })
    */
   .post(
     "/",
-    ({ body, cookie }) => {
-      const user = getAuthUser(cookie.session.value as string | undefined);
+    ({ body, cookie, headers }) => {
+      const user = getAuthUser(cookie.session.value as string | undefined, headers.authorization);
       if (!user) {
         return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
       }
@@ -187,8 +187,8 @@ export const mailboxRoutes = new Elysia({ prefix: "/mailboxes" })
    * @description Returns detailed information about a specific mailbox.
    * @returns Mailbox details
    */
-  .get("/:id", ({ params, cookie }) => {
-    const user = getAuthUser(cookie.session.value as string | undefined);
+  .get("/:id", ({ params, cookie, headers }) => {
+    const user = getAuthUser(cookie.session.value as string | undefined, headers.authorization);
     if (!user) {
       return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
     }
@@ -226,8 +226,8 @@ export const mailboxRoutes = new Elysia({ prefix: "/mailboxes" })
    * This action is irreversible.
    * @returns Success status
    */
-  .delete("/:id", ({ params, cookie }) => {
-    const user = getAuthUser(cookie.session.value as string | undefined);
+  .delete("/:id", ({ params, cookie, headers }) => {
+    const user = getAuthUser(cookie.session.value as string | undefined, headers.authorization);
     if (!user) {
       return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
     }

@@ -54,8 +54,8 @@ export const emailRoutes = new Elysia({ prefix: "/emails" })
    */
   .get(
     "/mailbox/:mailboxId",
-    ({ params, query, cookie }) => {
-      const user = getAuthUser(cookie.session.value as string | undefined);
+    ({ params, query, cookie, headers }) => {
+      const user = getAuthUser(cookie.session.value as string | undefined, headers.authorization);
       if (!user) {
         return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
       }
@@ -121,8 +121,8 @@ export const emailRoutes = new Elysia({ prefix: "/emails" })
    * and attachment metadata. Does not include attachment content.
    * @returns Email details with body and attachments list
    */
-  .get("/:id", ({ params, cookie }) => {
-    const user = getAuthUser(cookie.session.value as string | undefined);
+  .get("/:id", ({ params, cookie, headers }) => {
+    const user = getAuthUser(cookie.session.value as string | undefined, headers.authorization);
     if (!user) {
       return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
     }
@@ -176,8 +176,8 @@ export const emailRoutes = new Elysia({ prefix: "/emails" })
    * This is the complete email as received by the SMTP server.
    * @returns Raw email file (message/rfc822)
    */
-  .get("/:id/raw", ({ params, cookie, set }) => {
-    const user = getAuthUser(cookie.session.value as string | undefined);
+  .get("/:id/raw", ({ params, cookie, set, headers }) => {
+    const user = getAuthUser(cookie.session.value as string | undefined, headers.authorization);
     if (!user) {
       set.status = 401;
       return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
@@ -218,8 +218,8 @@ export const emailRoutes = new Elysia({ prefix: "/emails" })
    * This action is irreversible.
    * @returns Success status
    */
-  .delete("/:id", ({ params, cookie }) => {
-    const user = getAuthUser(cookie.session.value as string | undefined);
+  .delete("/:id", ({ params, cookie, headers }) => {
+    const user = getAuthUser(cookie.session.value as string | undefined, headers.authorization);
     if (!user) {
       return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
     }
@@ -258,8 +258,8 @@ export const attachmentRoutes = new Elysia({ prefix: "/attachments" })
    * owns the mailbox containing the email with this attachment.
    * @returns Attachment file with appropriate content type
    */
-  .get("/:id", ({ params, cookie, set }) => {
-    const user = getAuthUser(cookie.session.value as string | undefined);
+  .get("/:id", ({ params, cookie, set, headers }) => {
+    const user = getAuthUser(cookie.session.value as string | undefined, headers.authorization);
     if (!user) {
       set.status = 401;
       return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };

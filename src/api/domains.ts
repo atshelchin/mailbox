@@ -79,8 +79,8 @@ export const domainRoutes = new Elysia({ prefix: "/domains" })
    * - Domains where user is in allowed list
    * @returns List of accessible domains with ownership info
    */
-  .get("/", ({ cookie }) => {
-    const user = getAuthUser(cookie.session.value as string | undefined);
+  .get("/", ({ cookie, headers }) => {
+    const user = getAuthUser(cookie.session.value as string | undefined, headers.authorization);
     if (!user) {
       return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
     }
@@ -110,8 +110,8 @@ export const domainRoutes = new Elysia({ prefix: "/domains" })
    */
   .get(
     "/mine",
-    ({ cookie, query }) => {
-      const user = getAuthUser(cookie.session.value as string | undefined);
+    ({ cookie, query, headers }) => {
+      const user = getAuthUser(cookie.session.value as string | undefined, headers.authorization);
       if (!user) {
         return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
       }
@@ -172,8 +172,8 @@ export const domainRoutes = new Elysia({ prefix: "/domains" })
    */
   .post(
     "/",
-    ({ body, cookie }) => {
-      const user = getAuthUser(cookie.session.value as string | undefined);
+    ({ body, cookie, headers }) => {
+      const user = getAuthUser(cookie.session.value as string | undefined, headers.authorization);
       if (!user) {
         return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
       }
@@ -249,8 +249,8 @@ export const domainRoutes = new Elysia({ prefix: "/domains" })
    * the required DNS TXT or MX record.
    * @returns Verification status and DNS instructions
    */
-  .get("/:id/verify", async ({ params, cookie }) => {
-    const user = getAuthUser(cookie.session.value as string | undefined);
+  .get("/:id/verify", async ({ params, cookie, headers }) => {
+    const user = getAuthUser(cookie.session.value as string | undefined, headers.authorization);
     if (!user) {
       return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
     }
@@ -309,8 +309,8 @@ export const domainRoutes = new Elysia({ prefix: "/domains" })
    * MX verification checks if MX points to our mail server.
    * @returns Verification result
    */
-  .post("/:id/verify", async ({ params, cookie }) => {
-    const user = getAuthUser(cookie.session.value as string | undefined);
+  .post("/:id/verify", async ({ params, cookie, headers }) => {
+    const user = getAuthUser(cookie.session.value as string | undefined, headers.authorization);
     if (!user) {
       return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
     }
@@ -380,8 +380,8 @@ export const domainRoutes = new Elysia({ prefix: "/domains" })
    * Deleting a domain will cascade delete all associated mailboxes.
    * @returns Success status
    */
-  .delete("/:id", ({ params, cookie }) => {
-    const user = getAuthUser(cookie.session.value as string | undefined);
+  .delete("/:id", ({ params, cookie, headers }) => {
+    const user = getAuthUser(cookie.session.value as string | undefined, headers.authorization);
     if (!user) {
       return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
     }
@@ -420,8 +420,8 @@ export const domainRoutes = new Elysia({ prefix: "/domains" })
    */
   .patch(
     "/:id/visibility",
-    ({ params, body, cookie }) => {
-      const user = getAuthUser(cookie.session.value as string | undefined);
+    ({ params, body, cookie, headers }) => {
+      const user = getAuthUser(cookie.session.value as string | undefined, headers.authorization);
       if (!user) {
         return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
       }
@@ -467,8 +467,8 @@ export const domainRoutes = new Elysia({ prefix: "/domains" })
    * on this domain (when visibility is set to partial).
    * @returns List of allowed users
    */
-  .get("/:id/allowed-users", ({ params, cookie }) => {
-    const user = getAuthUser(cookie.session.value as string | undefined);
+  .get("/:id/allowed-users", ({ params, cookie, headers }) => {
+    const user = getAuthUser(cookie.session.value as string | undefined, headers.authorization);
     if (!user) {
       return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
     }
@@ -512,8 +512,8 @@ export const domainRoutes = new Elysia({ prefix: "/domains" })
    */
   .post(
     "/:id/allowed-users",
-    ({ params, body, cookie }) => {
-      const user = getAuthUser(cookie.session.value as string | undefined);
+    ({ params, body, cookie, headers }) => {
+      const user = getAuthUser(cookie.session.value as string | undefined, headers.authorization);
       if (!user) {
         return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
       }
@@ -563,8 +563,8 @@ export const domainRoutes = new Elysia({ prefix: "/domains" })
    * @description Removes a user from the domain's allowed users list.
    * @returns Success status
    */
-  .delete("/:id/allowed-users/:userId", ({ params, cookie }) => {
-    const user = getAuthUser(cookie.session.value as string | undefined);
+  .delete("/:id/allowed-users/:userId", ({ params, cookie, headers }) => {
+    const user = getAuthUser(cookie.session.value as string | undefined, headers.authorization);
     if (!user) {
       return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
     }
