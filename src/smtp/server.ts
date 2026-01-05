@@ -219,14 +219,21 @@ export function createSMTPServer(): SMTPServer {
      * @description Checks sender against anti-spam rules (rate limits, MX validation)
      */
     async onMailFrom(address, session, callback) {
-      // Get recipient domain from first RCPT TO (if available) for greylist check
-      // At this point we don't have recipients yet, so we skip that check here
-      const senderCheck = await checkSender(address.address, "");
-      if (!senderCheck.allowed) {
-        console.log(`Sender rejected: ${address.address} - ${senderCheck.reason}`);
-        return callback(new Error(senderCheck.reason || "Sender rejected"));
+      const ip = session.remoteAddress || "unknown";
+      console.log(`[SMTP] MAIL FROM: ${address.address} (from ${ip})`);
+
+      try {
+        const senderCheck = await checkSender(address.address, "");
+        if (!senderCheck.allowed) {
+          console.log(`[SMTP] ❌ Sender rejected: ${address.address} - ${senderCheck.reason}`);
+          return callback(new Error(senderCheck.reason || "Sender rejected"));
+        }
+        console.log(`[SMTP] ✓ Sender accepted: ${address.address}`);
+        callback();
+      } catch (error) {
+        console.error(`[SMTP] ❌ Error checking sender ${address.address}:`, error);
+        callback(new Error("Sender verification failed"));
       }
-      callback();
     },
 
     /**
@@ -235,16 +242,22 @@ export function createSMTPServer(): SMTPServer {
      * If domain is unknown but MX points to us, auto-discover and register it.
      */
     async onRcptTo(address, session, callback) {
+      const ip = session.remoteAddress || "unknown";
+      console.log(`[SMTP] RCPT TO: ${address.address} (from ${ip})`);
+
       const addr = parseEmailAddress(address.address);
       if (!addr) {
+        console.log(`[SMTP] ❌ Invalid recipient format: ${address.address}`);
         return callback(new Error(ERROR_MESSAGES.INVALID_RECIPIENT));
       }
 
       // Check if domain exists
       let domain = domainRepository.findByName(addr.domain);
+      console.log(`[SMTP] Domain lookup for ${addr.domain}: ${domain ? "found" : "not found"}`);
 
       // Auto-discovery: if domain doesn't exist, check if MX points to us
       if (!domain) {
+        console.log(`[SMTP] Attempting auto-discovery for domain: ${addr.domain}`);
         try {
           const mxPointsToUs = await verifyMxRecord(addr.domain);
           if (mxPointsToUs) {
@@ -252,24 +265,29 @@ export function createSMTPServer(): SMTPServer {
             const domainId = crypto.randomUUID();
             domainRepository.createAutoDiscovered(domainId, addr.domain);
             domain = domainRepository.findByName(addr.domain);
-            console.log(`Auto-discovered domain: ${addr.domain}`);
+            console.log(`[SMTP] ✓ Auto-discovered domain: ${addr.domain}`);
+          } else {
+            console.log(`[SMTP] ❌ MX record does not point to us for: ${addr.domain}`);
           }
         } catch (error) {
-          console.error(`MX verification failed for ${addr.domain}:`, error);
+          console.error(`[SMTP] ❌ MX verification failed for ${addr.domain}:`, error);
         }
       }
 
       // Check if domain is available (exists and verified/official)
       if (!domain || (domain.is_official !== 1 && domain.verified !== 1)) {
+        console.log(`[SMTP] ❌ Domain not available: ${addr.domain} (official=${domain?.is_official}, verified=${domain?.verified})`);
         return callback(new Error(ERROR_MESSAGES.DOMAIN_NOT_FOUND));
       }
 
       // Check if mailbox exists
       const mailbox = findMailboxByAddress(addr.localPart, addr.domain);
       if (!mailbox) {
+        console.log(`[SMTP] ❌ Mailbox not found: ${addr.localPart}@${addr.domain}`);
         return callback(new Error(ERROR_MESSAGES.MAILBOX_NOT_FOUND));
       }
 
+      console.log(`[SMTP] ✓ Recipient accepted: ${address.address} (mailbox: ${mailbox.id})`);
       callback();
     },
 
@@ -278,12 +296,16 @@ export function createSMTPServer(): SMTPServer {
      * @description Receives the email stream, validates size, and stores the email
      */
     onData(stream, session, callback) {
+      const ip = session.remoteAddress || "unknown";
       const chunks: Buffer[] = [];
       let totalSize = 0;
+
+      console.log(`[SMTP] DATA: Starting to receive email data (from ${ip})`);
 
       stream.on("data", (chunk: Buffer) => {
         totalSize += chunk.length;
         if (totalSize > config.maxEmailSize) {
+          console.log(`[SMTP] ❌ Message too large: ${totalSize} bytes (max: ${config.maxEmailSize})`);
           stream.destroy();
           return callback(new Error(ERROR_MESSAGES.MESSAGE_TOO_LARGE));
         }
@@ -292,29 +314,34 @@ export function createSMTPServer(): SMTPServer {
 
       stream.on("end", async () => {
         const rawEmail = Buffer.concat(chunks);
+        console.log(`[SMTP] DATA: Received ${rawEmail.length} bytes`);
 
         const from = session.envelope.mailFrom
           ? session.envelope.mailFrom.address
           : "unknown@unknown";
 
         const to = session.envelope.rcptTo.map((r) => r.address);
+        console.log(`[SMTP] Processing email: from=${from}, to=${to.join(", ")}`);
 
         try {
           const result = await processEmail(rawEmail, from, to);
+          console.log(`[SMTP] Email processed: accepted=${result.accepted.length}, rejected=${result.rejected.length}`);
 
           if (result.accepted.length === 0) {
+            console.log(`[SMTP] ❌ No valid recipients, rejected: ${result.rejected.join(", ")}`);
             return callback(new Error(ERROR_MESSAGES.NO_VALID_RECIPIENTS));
           }
 
+          console.log(`[SMTP] ✓ Email accepted for: ${result.accepted.join(", ")}`);
           callback();
         } catch (error) {
-          console.error("Error processing email:", error);
+          console.error("[SMTP] ❌ Error processing email:", error);
           callback(new Error(ERROR_MESSAGES.INTERNAL_ERROR));
         }
       });
 
       stream.on("error", (err) => {
-        console.error("Stream error:", err);
+        console.error("[SMTP] ❌ Stream error:", err);
         callback(new Error(ERROR_MESSAGES.INTERNAL_ERROR));
       });
     },
@@ -326,16 +353,17 @@ export function createSMTPServer(): SMTPServer {
      */
     onConnect(session, callback) {
       const ip = session.remoteAddress || "unknown";
-      console.log(`SMTP connection from ${ip}`);
+      console.log(`[SMTP] ➡️ Connection opened from ${ip}`);
 
       // Perform synchronous checks only (rate limiting, concurrent connections)
       // Async DNS checks moved to avoid blocking connection establishment
       try {
         // Track connection for concurrent limit
         trackConnectionOpen(ip);
+        console.log(`[SMTP] ✓ Connection accepted from ${ip}`);
         callback();
       } catch (error) {
-        console.error(`Connection error from ${ip}:`, error);
+        console.error(`[SMTP] ❌ Connection rejected from ${ip}:`, error);
         callback(new Error("Connection rejected"));
       }
     },
@@ -346,7 +374,7 @@ export function createSMTPServer(): SMTPServer {
      */
     onClose(session) {
       const ip = session.remoteAddress || "unknown";
-      console.log(`SMTP connection closed from ${ip}`);
+      console.log(`[SMTP] ⬅️ Connection closed from ${ip}`);
       trackConnectionClose(ip);
     },
   });
