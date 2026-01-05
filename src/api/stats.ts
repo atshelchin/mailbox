@@ -59,24 +59,24 @@ const queries = {
     "SELECT SUM(size) as total FROM attachments"
   ),
 
-  // Top domains by mailbox count (public domains only, visibility = 2)
+  // Top domains by mailbox count (public & verified domains only)
   topDomainsByMailboxes: db.prepare<{ name: string; count: number }, []>(`
     SELECT d.name, COUNT(m.id) as count
     FROM domains d
     LEFT JOIN mailboxes m ON d.id = m.domain_id
-    WHERE d.visibility = 2
+    WHERE d.visibility = 2 AND (d.verified = 1 OR d.is_official = 1)
     GROUP BY d.id
     ORDER BY count DESC
     LIMIT 10
   `),
 
-  // Top domains by email count (public domains only, visibility = 2)
+  // Top domains by email count (public & verified domains only)
   topDomainsByEmails: db.prepare<{ name: string; count: number }, []>(`
     SELECT d.name, COUNT(e.id) as count
     FROM domains d
     LEFT JOIN mailboxes m ON d.id = m.domain_id
     LEFT JOIN emails e ON m.id = e.mailbox_id
-    WHERE d.visibility = 2
+    WHERE d.visibility = 2 AND (d.verified = 1 OR d.is_official = 1)
     GROUP BY d.id
     ORDER BY count DESC
     LIMIT 10
