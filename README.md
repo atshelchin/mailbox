@@ -24,7 +24,7 @@ bun run dev
 ```
 
 服务将在以下端口启动：
-- HTTP API: http://localhost:5000
+- HTTP API: http://localhost:5005
 - SMTP: localhost:25
 
 ### Docker 部署
@@ -35,7 +35,7 @@ docker build -t mailbox:latest .
 
 # 运行容器
 docker run -d \
-  -p 5000:5000 \
+  -p 5005:5005 \
   -p 25:25 \
   -v mailbox-data:/data \
   -e SERVICE_DOMAIN=mailbox.example.com \
@@ -51,7 +51,7 @@ docker run -d \
 | 变量名 | 说明 | 默认值 |
 |--------|------|--------|
 | `HOST` | 监听地址 | `0.0.0.0` |
-| `HTTP_PORT` | HTTP 端口 | `5000` |
+| `HTTP_PORT` | HTTP 端口 | `5005` |
 | `SMTP_PORT` | SMTP 端口 | `25` |
 | `SERVICE_DOMAIN` | 服务域名 | `mailbox.0x0.run` |
 | `OFFICIAL_DOMAINS` | 官方邮箱域名 (逗号分隔) | `test1.0x0.run,test2.0x0.run` |
@@ -206,7 +206,7 @@ git push origin v1.0.0
 
 确保以下端口开放：
 - **25**: SMTP (接收邮件)
-- **5000**: HTTP API (或通过 nginx 反向代理)
+- **5005**: HTTP API (或通过 nginx 反向代理)
 
 ### Nginx 反向代理 (可选)
 
@@ -219,7 +219,7 @@ server {
     ssl_certificate_key /path/to/key.pem;
 
     location / {
-        proxy_pass http://localhost:5000;
+        proxy_pass http://localhost:5005;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
