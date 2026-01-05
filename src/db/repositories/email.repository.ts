@@ -39,6 +39,11 @@ const statements = {
   countByMailboxId: db.prepare<{ count: number }, [string]>(
     "SELECT COUNT(*) as count FROM emails WHERE mailbox_id = ?"
   ),
+  countByDomainId: db.prepare<{ count: number }, [string]>(`
+    SELECT COUNT(*) as count FROM emails e
+    JOIN mailboxes m ON e.mailbox_id = m.id
+    WHERE m.domain_id = ?
+  `),
   create: db.prepare(`
     INSERT INTO emails (id, mailbox_id, from_address, to_address, subject, text_body, html_body, raw_email, size)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -114,6 +119,16 @@ export const emailRepository = {
    */
   countByMailboxId(mailboxId: string): number {
     const result = statements.countByMailboxId.get(mailboxId);
+    return result?.count ?? 0;
+  },
+
+  /**
+   * Count emails for a domain
+   * @param domainId - The domain ID
+   * @returns The count
+   */
+  countByDomainId(domainId: string): number {
+    const result = statements.countByDomainId.get(domainId);
     return result?.count ?? 0;
   },
 

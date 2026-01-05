@@ -6,7 +6,11 @@
       "Bash(dig:*)",
       "Bash(node -e:*)",
       "Bash(bun -e:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(pkill:*)",
+      "Bash(rm:*)",
+      "Bash(lsof:*)",
+      "Bash(/usr/bin/curl -s http://localhost:5005/api/stats)"
     ],
     "deny": [],
     "ask": []

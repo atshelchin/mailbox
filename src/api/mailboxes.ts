@@ -21,7 +21,7 @@
 import { Elysia, t } from "elysia";
 import { getAuthUser } from "./auth";
 import { validateLocalPart } from "../utils/validation";
-import { domainRepository, mailboxRepository } from "../db";
+import { domainRepository, mailboxRepository, emailRepository } from "../db";
 import { ERROR_MESSAGES, LIMITS } from "../constants";
 import type { Mailbox } from "../types";
 
@@ -84,6 +84,7 @@ export const mailboxRoutes = new Elysia({ prefix: "/mailboxes" })
           address: `${m.local_part}@${m.domain_name}`,
           localPart: m.local_part,
           domain: m.domain_name,
+          emailCount: emailRepository.countByMailboxId(m.id),
           createdAt: m.created_at,
         })),
       };

@@ -3,10 +3,12 @@ import { authRoutes } from "./auth";
 import { domainRoutes } from "./domains";
 import { mailboxRoutes } from "./mailboxes";
 import { emailRoutes, attachmentRoutes } from "./emails";
+import { statsRoutes } from "./stats";
 
 export const apiRoutes = new Elysia({ prefix: "/api" })
   .use(authRoutes)
   .use(domainRoutes)
   .use(mailboxRoutes)
   .use(emailRoutes)
-  .use(attachmentRoutes);
+  .use(attachmentRoutes)
+  .use(statsRoutes);

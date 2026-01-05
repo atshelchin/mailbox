@@ -40,7 +40,7 @@ import {
   verifyMxRecord,
   getMxRecords,
 } from "../utils/dns";
-import { domainRepository, userRepository } from "../db";
+import { domainRepository, userRepository, mailboxRepository, emailRepository } from "../db";
 import { ERROR_MESSAGES, LIMITS } from "../constants";
 import { DomainVisibility } from "../types";
 
@@ -143,6 +143,8 @@ export const domainRoutes = new Elysia({ prefix: "/domains" })
           visibility: d.visibility,
           autoDiscovered: d.auto_discovered === 1,
           allowedUsers: domainRepository.findAllowedUsers(d.id).length,
+          mailboxCount: mailboxRepository.countByDomainId(d.id),
+          emailCount: emailRepository.countByDomainId(d.id),
           createdAt: d.created_at,
         })),
       };

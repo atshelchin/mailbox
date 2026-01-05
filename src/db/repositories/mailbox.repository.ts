@@ -37,6 +37,9 @@ const statements = {
   countByUserId: db.prepare<{ count: number }, [string]>(
     "SELECT COUNT(*) as count FROM mailboxes WHERE user_id = ?"
   ),
+  countByDomainId: db.prepare<{ count: number }, [string]>(
+    "SELECT COUNT(*) as count FROM mailboxes WHERE domain_id = ?"
+  ),
   getDomainById: db.prepare<Domain, [string]>(
     "SELECT * FROM domains WHERE id = ?"
   ),
@@ -104,6 +107,16 @@ export const mailboxRepository = {
    */
   countByUserId(userId: string): number {
     const result = statements.countByUserId.get(userId);
+    return result?.count ?? 0;
+  },
+
+  /**
+   * Count mailboxes for a domain
+   * @param domainId - The domain ID
+   * @returns The count
+   */
+  countByDomainId(domainId: string): number {
+    const result = statements.countByDomainId.get(domainId);
     return result?.count ?? 0;
   },
 
