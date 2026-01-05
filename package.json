@@ -6,10 +6,16 @@
     "dev": "bun run --watch src/index.ts"
   },
   "dependencies": {
-    "elysia": "latest"
+    "@elysiajs/cors": "^1.4.1",
+    "@simplewebauthn/server": "^11.0.0",
+    "elysia": "latest",
+    "mailparser": "^3.7.2",
+    "smtp-server": "^3.13.6"
   },
   "devDependencies": {
-    "bun-types": "latest"
+    "bun-types": "latest",
+    "@types/smtp-server": "^3.5.10",
+    "@types/mailparser": "^3.4.5"
   },
   "module": "src/index.js"
 }

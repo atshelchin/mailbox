@@ -2,6 +2,11 @@
 
 # dependencies
 /node_modules
+
+# database
+*.db
+*.db-wal
+*.db-shm
 /.pnp
 .pnp.js
 
