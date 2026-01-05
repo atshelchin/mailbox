@@ -24,7 +24,7 @@ bun run dev
 ```
 
 服务将在以下端口启动：
-- HTTP API: http://localhost:3000
+- HTTP API: http://localhost:5000
 - SMTP: localhost:25
 
 ### Docker 部署
@@ -35,7 +35,7 @@ docker build -t mailbox:latest .
 
 # 运行容器
 docker run -d \
-  -p 3000:3000 \
+  -p 5000:5000 \
   -p 25:25 \
   -v mailbox-data:/data \
   -e SERVICE_DOMAIN=mailbox.example.com \
@@ -51,7 +51,7 @@ docker run -d \
 | 变量名 | 说明 | 默认值 |
 |--------|------|--------|
 | `HOST` | 监听地址 | `0.0.0.0` |
-| `HTTP_PORT` | HTTP 端口 | `3000` |
+| `HTTP_PORT` | HTTP 端口 | `5000` |
 | `SMTP_PORT` | SMTP 端口 | `25` |
 | `SERVICE_DOMAIN` | 服务域名 | `mailbox.0x0.run` |
 | `OFFICIAL_DOMAINS` | 官方邮箱域名 (逗号分隔) | `test1.0x0.run,test2.0x0.run` |
@@ -116,7 +116,7 @@ GET    /api/attachments/:id      - 下载附件
 调用 API 添加您的域名：
 
 ```bash
-curl -X POST https://api.mailbox.0x0.run/api/domains \
+curl -X POST https://mailbox-api.appsdata.xyz/api/domains \
   -H "Content-Type: application/json" \
   -H "Cookie: session=YOUR_SESSION" \
   -d '{"name": "yourdomain.com"}'
@@ -146,7 +146,7 @@ curl -X POST https://api.mailbox.0x0.run/api/domains \
 DNS 记录生效后，调用验证 API：
 
 ```bash
-curl -X POST https://api.mailbox.0x0.run/api/domains/{domain_id}/verify \
+curl -X POST https://mailbox-api.appsdata.xyz/api/domains/{domain_id}/verify \
   -H "Cookie: session=YOUR_SESSION"
 ```
 
@@ -155,7 +155,7 @@ curl -X POST https://api.mailbox.0x0.run/api/domains/{domain_id}/verify \
 域名验证通过后，即可创建邮箱地址：
 
 ```bash
-curl -X POST https://api.mailbox.0x0.run/api/mailboxes \
+curl -X POST https://mailbox-api.appsdata.xyz/api/mailboxes \
   -H "Content-Type: application/json" \
   -H "Cookie: session=YOUR_SESSION" \
   -d '{"localPart": "hello", "domainId": "YOUR_DOMAIN_ID"}'
@@ -206,20 +206,20 @@ git push origin v1.0.0
 
 确保以下端口开放：
 - **25**: SMTP (接收邮件)
-- **3000**: HTTP API (或通过 nginx 反向代理)
+- **5000**: HTTP API (或通过 nginx 反向代理)
 
 ### Nginx 反向代理 (可选)
 
 ```nginx
 server {
     listen 443 ssl;
-    server_name api.mailbox.0x0.run;
+    server_name mailbox-api.appsdata.xyz;
 
     ssl_certificate /path/to/cert.pem;
     ssl_certificate_key /path/to/key.pem;
 
     location / {
-        proxy_pass http://localhost:3000;
+        proxy_pass http://localhost:5000;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;

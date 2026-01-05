@@ -1,7 +1,7 @@
 export const config = {
   // 服务配置
   host: process.env.HOST || "0.0.0.0",
-  httpPort: parseInt(process.env.HTTP_PORT || "3000"),
+  httpPort: parseInt(process.env.HTTP_PORT || "5000"),
   smtpPort: parseInt(process.env.SMTP_PORT || "25"),
 
   // 域名配置
