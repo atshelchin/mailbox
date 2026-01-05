@@ -90,11 +90,12 @@ function createSession(userId: string): string {
  * @param sessionId - The session ID to set
  */
 function setSessionCookie(cookie: { session: { set: (opts: object) => void } }, sessionId: string): void {
+  const isProduction = process.env.NODE_ENV === "production";
   cookie.session.set({
     value: sessionId,
     httpOnly: true,
-    secure: config.origin.startsWith("https"),
-    sameSite: "strict",
+    secure: isProduction, // HTTPS required in production
+    sameSite: isProduction ? "none" : "lax", // "none" for cross-site cookies in production
     maxAge: config.sessionMaxAge / 1000,
     path: "/",
   });
