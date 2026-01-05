@@ -42,6 +42,9 @@ const statements = {
   createChallenge: db.prepare(
     "INSERT INTO challenges (id, user_id, challenge, type, expires_at) VALUES (?, ?, ?, ?, ?)"
   ),
+  findChallengeById: db.prepare<Challenge, [string]>(
+    "SELECT * FROM challenges WHERE id = ?"
+  ),
   findChallenge: db.prepare<Challenge, [string, string]>(
     "SELECT * FROM challenges WHERE user_id = ? AND type = ? ORDER BY created_at DESC LIMIT 1"
   ),
@@ -178,6 +181,15 @@ export const challengeRepository = {
     expiresAt: number
   ): void {
     statements.createChallenge.run(id, userId, challenge, type, expiresAt);
+  },
+
+  /**
+   * Find a challenge by ID
+   * @param id - The challenge ID
+   * @returns The challenge or null
+   */
+  findById(id: string): Challenge | null {
+    return statements.findChallengeById.get(id) ?? null;
   },
 
   /**

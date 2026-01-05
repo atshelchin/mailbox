@@ -54,6 +54,17 @@ function uint8ArrayToBase64(arr: Uint8Array): string {
 }
 
 /**
+ * Convert base64url credential ID to database format
+ * @description The credential ID from WebAuthn response is already base64url encoded.
+ * We store it by encoding again to ensure consistent format with registration.
+ * @param id - The base64url credential ID from WebAuthn response
+ * @returns The credential ID in database storage format
+ */
+function credentialIdToDbFormat(id: string): string {
+  return Buffer.from(id).toString("base64url");
+}
+
+/**
  * Get the current Unix timestamp in seconds
  * @returns Current timestamp
  */
@@ -289,45 +300,68 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
   // ============================================================================
 
   /**
-   * Get login options
+   * Get login options (discoverable credentials - no username required)
    * @route POST /api/auth/login/options
-   * @param body.username - The username to authenticate
-   * @returns Authentication options for WebAuthn or error
+   * @param body.username - Optional username (for backward compatibility)
+   * @returns Authentication options for WebAuthn
    */
   .post(
     "/login/options",
     async ({ body }) => {
       const { username } = body;
 
-      // Find the user
-      const user = userRepository.findByUsername(username);
-      if (!user) {
-        return { success: false, error: ERROR_MESSAGES.USER_NOT_FOUND };
+      // If username is provided, use traditional flow
+      if (username) {
+        const user = userRepository.findByUsername(username);
+        if (!user) {
+          return { success: false, error: ERROR_MESSAGES.USER_NOT_FOUND };
+        }
+
+        const credentials = credentialRepository.findByUserId(user.id);
+        if (credentials.length === 0) {
+          return { success: false, error: ERROR_MESSAGES.NO_CREDENTIALS };
+        }
+
+        const options = await generateAuthenticationOptions({
+          rpID: config.rpID,
+          allowCredentials: credentials.map((cred) => ({
+            id: cred.id,
+            transports: cred.transports
+              ? (JSON.parse(cred.transports) as AuthenticatorTransportFuture[])
+              : undefined,
+          })),
+          userVerification: "preferred",
+        });
+
+        const challengeExpires = now() + LIMITS.CHALLENGE_EXPIRATION_SECONDS;
+        challengeRepository.create(
+          crypto.randomUUID(),
+          user.id,
+          options.challenge,
+          "authentication",
+          challengeExpires
+        );
+
+        return {
+          success: true,
+          options,
+          userId: user.id,
+        };
       }
 
-      // Get user's credentials
-      const credentials = credentialRepository.findByUserId(user.id);
-      if (credentials.length === 0) {
-        return { success: false, error: ERROR_MESSAGES.NO_CREDENTIALS };
-      }
-
-      // Generate authentication options
+      // Discoverable credentials flow - no username required
       const options = await generateAuthenticationOptions({
         rpID: config.rpID,
-        allowCredentials: credentials.map((cred) => ({
-          id: cred.id,
-          transports: cred.transports
-            ? (JSON.parse(cred.transports) as AuthenticatorTransportFuture[])
-            : undefined,
-        })),
         userVerification: "preferred",
+        // Empty allowCredentials enables discoverable credentials
       });
 
-      // Store challenge
+      // Store challenge without user_id (will be resolved from credential)
+      const challengeId = crypto.randomUUID();
       const challengeExpires = now() + LIMITS.CHALLENGE_EXPIRATION_SECONDS;
       challengeRepository.create(
-        crypto.randomUUID(),
-        user.id,
+        challengeId,
+        null, // No user_id for discoverable credentials
         options.challenge,
         "authentication",
         challengeExpires
@@ -336,12 +370,12 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
       return {
         success: true,
         options,
-        userId: user.id,
+        challengeId, // Return challengeId instead of userId
       };
     },
     {
       body: t.Object({
-        username: t.String(),
+        username: t.Optional(t.String()),
       }),
     }
   )
@@ -349,23 +383,46 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
   /**
    * Verify login response
    * @route POST /api/auth/login/verify
-   * @param body.userId - The user ID from options request
+   * @param body.userId - The user ID (for traditional flow)
+   * @param body.challengeId - The challenge ID (for discoverable credentials flow)
    * @param body.response - WebAuthn response from authenticator
    * @returns User info and sets session cookie on success
    */
   .post(
     "/login/verify",
     async ({ body, cookie }) => {
-      const { userId, response } = body;
+      const { userId, challengeId, response } = body;
 
-      // Find the user
-      const user = userRepository.findById(userId);
+      // Find the credential first (needed for both flows)
+      // Convert the credential ID to database format (response.id is base64url, we store it encoded again)
+      const dbCredentialId = credentialIdToDbFormat(response.id);
+      const credential = credentialRepository.findById(dbCredentialId);
+      if (!credential) {
+        return { success: false, error: ERROR_MESSAGES.CREDENTIAL_NOT_FOUND };
+      }
+
+      // Determine the user - from credential for discoverable, from userId for traditional
+      const resolvedUserId = userId || credential.user_id;
+      const user = userRepository.findById(resolvedUserId);
       if (!user) {
         return { success: false, error: ERROR_MESSAGES.USER_NOT_FOUND };
       }
 
+      // Verify credential belongs to user (for traditional flow)
+      if (userId && credential.user_id !== userId) {
+        return { success: false, error: ERROR_MESSAGES.CREDENTIAL_NOT_FOUND };
+      }
+
       // Find and validate the challenge
-      const challengeRecord = challengeRepository.findByUserIdAndType(userId, "authentication");
+      let challengeRecord;
+      if (challengeId) {
+        // Discoverable credentials flow - find by challengeId
+        challengeRecord = challengeRepository.findById(challengeId);
+      } else if (userId) {
+        // Traditional flow - find by userId
+        challengeRecord = challengeRepository.findByUserIdAndType(userId, "authentication");
+      }
+
       if (!challengeRecord) {
         return { success: false, error: ERROR_MESSAGES.CHALLENGE_NOT_FOUND };
       }
@@ -375,21 +432,16 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
         return { success: false, error: ERROR_MESSAGES.CHALLENGE_EXPIRED };
       }
 
-      // Find the credential
-      const credential = credentialRepository.findById(response.id);
-      if (!credential || credential.user_id !== userId) {
-        return { success: false, error: ERROR_MESSAGES.CREDENTIAL_NOT_FOUND };
-      }
-
       try {
         // Verify the authentication response
+        // Note: verifyAuthenticationResponse expects credential.id in base64url format (same as response.id)
         const verification = await verifyAuthenticationResponse({
           response: response as AuthenticationResponseJSON,
           expectedChallenge: challengeRecord.challenge,
           expectedOrigin: config.allowedOrigins,
           expectedRPID: config.rpID,
           credential: {
-            id: credential.id,
+            id: response.id, // Use the original response.id (base64url format)
             publicKey: credential.public_key,
             counter: credential.counter,
             transports: credential.transports
@@ -407,12 +459,12 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
         credentialRepository.updateCounter(credential.id, verification.authenticationInfo.newCounter);
 
         // Create session and set cookie
-        const sessionId = createSession(userId);
+        const sessionId = createSession(resolvedUserId);
         setSessionCookie(cookie, sessionId);
 
         return {
           success: true,
-          user: { id: userId, username: user.username },
+          user: { id: resolvedUserId, username: user.username },
         };
       } catch (error) {
         return { success: false, error: String(error) };
@@ -420,7 +472,8 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
     },
     {
       body: t.Object({
-        userId: t.String(),
+        userId: t.Optional(t.String()),
+        challengeId: t.Optional(t.String()),
         response: t.Any(),
       }),
     }
