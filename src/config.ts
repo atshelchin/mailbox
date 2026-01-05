@@ -32,7 +32,7 @@ export const config = {
 
   // 邮件配置
   maxEmailSize: parseInt(process.env.MAX_EMAIL_SIZE || String(100 * 1024 * 1024)), // 100MB
-  emailRetentionHours: parseInt(process.env.EMAIL_RETENTION_HOURS || "1"),
+  emailRetentionHours: 24,
 
   // 数据库
   dbPath: process.env.DB_PATH || "./mailbox.db",
