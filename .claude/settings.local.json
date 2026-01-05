@@ -2,7 +2,11 @@
   "permissions": {
     "allow": [
       "Bash(curl:*)",
-      "Bash(bun add:*)"
+      "Bash(bun add:*)",
+      "Bash(dig:*)",
+      "Bash(node -e:*)",
+      "Bash(bun -e:*)",
+      "Bash(git push:*)"
     ],
     "deny": [],
     "ask": []

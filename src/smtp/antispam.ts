@@ -49,7 +49,7 @@ const ANTISPAM_CONFIG = {
   requireReverseDns: false, // Many legitimate servers don't have PTR
 
   // Require sender domain to have MX record
-  requireSenderMx: true,
+  requireSenderMx: false, // Disabled to avoid DNS lookup delays
 };
 
 // ============================================================================
