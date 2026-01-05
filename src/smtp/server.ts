@@ -1,36 +1,83 @@
+/**
+ * @fileoverview SMTP Server Implementation
+ * @description Receives and stores incoming emails for registered mailboxes.
+ *
+ * ## Overview
+ * This module implements an SMTP server that:
+ * - Receives incoming emails on port 25
+ * - Validates recipients against registered mailboxes
+ * - Parses email content (subject, body, attachments)
+ * - Stores emails in the database
+ *
+ * ## SMTP Flow
+ * 1. Connection: Client connects, server sends banner
+ * 2. MAIL FROM: Server accepts any sender
+ * 3. RCPT TO: Server validates recipient has a registered mailbox
+ * 4. DATA: Server receives and processes the email
+ * 5. Storage: Email is parsed and stored in database
+ *
+ * ## Security
+ * - No authentication required (standard for receiving mail)
+ * - Size limits enforced to prevent abuse
+ * - Only accepts mail for registered domains/mailboxes
+ *
+ * @module smtp/server
+ */
+
 import { SMTPServer } from "smtp-server";
 import { simpleParser, ParsedMail } from "mailparser";
-import { db } from "../db";
 import { config } from "../config";
+import { domainRepository, emailRepository } from "../db";
 import { findMailboxByAddress } from "../api/mailboxes";
+import { ERROR_MESSAGES } from "../constants";
 
-interface StoredEmail {
-  id: string;
-  mailbox_id: string;
-  from_address: string;
-  to_address: string;
-  subject: string | null;
-  text_body: string | null;
-  html_body: string | null;
-  raw_email: Buffer;
-  size: number;
+// ============================================================================
+// Types
+// ============================================================================
+
+/**
+ * Result of processing an email
+ */
+interface ProcessEmailResult {
+  /** Recipients that were accepted */
+  accepted: string[];
+  /** Recipients that were rejected */
+  rejected: string[];
 }
 
-const queries = {
-  insertEmail: db.prepare(`
-    INSERT INTO emails (id, mailbox_id, from_address, to_address, subject, text_body, html_body, raw_email, size)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `),
-  insertAttachment: db.prepare(`
-    INSERT INTO attachments (id, email_id, filename, content_type, size, content)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `),
-  getDomainByName: db.prepare<{ id: string; verified: number; is_official: number }, [string]>(
-    "SELECT id, verified, is_official FROM domains WHERE name = ?"
-  ),
-};
+/**
+ * Parsed email address components
+ */
+interface ParsedEmailAddress {
+  /** Local part (before @) */
+  localPart: string;
+  /** Domain part (after @) */
+  domain: string;
+}
 
-function parseEmailAddress(address: string): { localPart: string; domain: string } | null {
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/**
+ * Parse an email address into its components
+ *
+ * @description Extracts the local part and domain from an email address.
+ * Handles both plain addresses and angle-bracket format.
+ *
+ * @param address - The email address to parse
+ * @returns Parsed components or null if invalid
+ *
+ * @example
+ * ```typescript
+ * parseEmailAddress("user@example.com")
+ * // { localPart: "user", domain: "example.com" }
+ *
+ * parseEmailAddress("<user@example.com>")
+ * // { localPart: "user", domain: "example.com" }
+ * ```
+ */
+function parseEmailAddress(address: string): ParsedEmailAddress | null {
   const match = address.match(/^<?([^@<>]+)@([^@<>]+)>?$/);
   if (!match) return null;
   return {
@@ -39,15 +86,26 @@ function parseEmailAddress(address: string): { localPart: string; domain: string
   };
 }
 
+/**
+ * Process and store an incoming email
+ *
+ * @description Parses the raw email and stores it for each valid recipient.
+ * Handles multiple recipients in a single email.
+ *
+ * @param rawEmail - The raw email data
+ * @param from - The sender address
+ * @param to - Array of recipient addresses
+ * @returns Processing result with accepted/rejected recipients
+ */
 async function processEmail(
   rawEmail: Buffer,
   from: string,
   to: string[]
-): Promise<{ accepted: string[]; rejected: string[] }> {
+): Promise<ProcessEmailResult> {
   const accepted: string[] = [];
   const rejected: string[] = [];
 
-  // 解析邮件
+  // Parse the email
   let parsed: ParsedMail;
   try {
     parsed = await simpleParser(rawEmail);
@@ -56,7 +114,7 @@ async function processEmail(
     return { accepted: [], rejected: to };
   }
 
-  // 处理每个收件人
+  // Process each recipient
   for (const recipient of to) {
     const addr = parseEmailAddress(recipient);
     if (!addr) {
@@ -64,46 +122,45 @@ async function processEmail(
       continue;
     }
 
-    // 检查域名是否存在
-    const domain = queries.getDomainByName.get(addr.domain);
-    if (!domain || (domain.is_official !== 1 && domain.verified !== 1)) {
+    // Check if domain exists and is available
+    if (!domainRepository.isAvailable(addr.domain)) {
       rejected.push(recipient);
       continue;
     }
 
-    // 查找邮箱
+    // Find the mailbox
     const mailbox = findMailboxByAddress(addr.localPart, addr.domain);
     if (!mailbox) {
       rejected.push(recipient);
       continue;
     }
 
-    // 存储邮件
+    // Store the email
     const emailId = crypto.randomUUID();
     try {
-      queries.insertEmail.run(
-        emailId,
-        mailbox.id,
-        from,
-        recipient,
-        parsed.subject || null,
-        parsed.text || null,
-        parsed.html || null,
+      emailRepository.create({
+        id: emailId,
+        mailboxId: mailbox.id,
+        fromAddress: from,
+        toAddress: recipient,
+        subject: parsed.subject || null,
+        textBody: parsed.text || null,
+        htmlBody: parsed.html || null,
         rawEmail,
-        rawEmail.length
-      );
+        size: rawEmail.length,
+      });
 
-      // 存储附件
+      // Store attachments
       if (parsed.attachments && parsed.attachments.length > 0) {
         for (const attachment of parsed.attachments) {
-          queries.insertAttachment.run(
-            crypto.randomUUID(),
+          emailRepository.createAttachment({
+            id: crypto.randomUUID(),
             emailId,
-            attachment.filename || null,
-            attachment.contentType || null,
-            attachment.size || 0,
-            attachment.content
-          );
+            filename: attachment.filename || null,
+            contentType: attachment.contentType || null,
+            size: attachment.size || 0,
+            content: attachment.content,
+          });
         }
       }
 
@@ -118,47 +175,75 @@ async function processEmail(
   return { accepted, rejected };
 }
 
+// ============================================================================
+// SMTP Server Factory
+// ============================================================================
+
+/**
+ * Create an SMTP server instance
+ *
+ * @description Creates and configures an SMTP server for receiving emails.
+ * The server validates recipients against registered mailboxes and stores
+ * received emails in the database.
+ *
+ * @returns Configured SMTP server instance
+ *
+ * @example
+ * ```typescript
+ * const server = createSMTPServer();
+ * server.listen(25, "0.0.0.0", () => {
+ *   console.log("SMTP server started");
+ * });
+ * ```
+ */
 export function createSMTPServer(): SMTPServer {
   const server = new SMTPServer({
-    // 不需要认证 (接收邮件)
+    // No authentication required for receiving mail
     authOptional: true,
     disabledCommands: ["AUTH"],
 
-    // 大小限制
+    // Size limit for incoming emails
     size: config.maxEmailSize,
 
-    // Banner
+    // Server banner
     banner: `${config.serviceDomain} ESMTP Mailbox Service`,
 
-    // 验证发件人
+    /**
+     * Validate sender address
+     * @description Accepts all senders - we don't restrict who can send to us
+     */
     onMailFrom(address, session, callback) {
-      // 接受所有发件人
       callback();
     },
 
-    // 验证收件人
+    /**
+     * Validate recipient address
+     * @description Checks if the recipient has a registered mailbox
+     */
     onRcptTo(address, session, callback) {
       const addr = parseEmailAddress(address.address);
       if (!addr) {
-        return callback(new Error("Invalid recipient address"));
+        return callback(new Error(ERROR_MESSAGES.INVALID_RECIPIENT));
       }
 
-      // 检查域名
-      const domain = queries.getDomainByName.get(addr.domain);
-      if (!domain || (domain.is_official !== 1 && domain.verified !== 1)) {
-        return callback(new Error("Domain not found"));
+      // Check if domain is available
+      if (!domainRepository.isAvailable(addr.domain)) {
+        return callback(new Error(ERROR_MESSAGES.DOMAIN_NOT_FOUND));
       }
 
-      // 检查邮箱
+      // Check if mailbox exists
       const mailbox = findMailboxByAddress(addr.localPart, addr.domain);
       if (!mailbox) {
-        return callback(new Error("User not found"));
+        return callback(new Error(ERROR_MESSAGES.MAILBOX_NOT_FOUND));
       }
 
       callback();
     },
 
-    // 接收邮件数据
+    /**
+     * Receive and process email data
+     * @description Receives the email stream, validates size, and stores the email
+     */
     onData(stream, session, callback) {
       const chunks: Buffer[] = [];
       let totalSize = 0;
@@ -167,7 +252,7 @@ export function createSMTPServer(): SMTPServer {
         totalSize += chunk.length;
         if (totalSize > config.maxEmailSize) {
           stream.destroy();
-          return callback(new Error("Message too large"));
+          return callback(new Error(ERROR_MESSAGES.MESSAGE_TOO_LARGE));
         }
         chunks.push(chunk);
       });
@@ -185,28 +270,35 @@ export function createSMTPServer(): SMTPServer {
           const result = await processEmail(rawEmail, from, to);
 
           if (result.accepted.length === 0) {
-            return callback(new Error("No valid recipients"));
+            return callback(new Error(ERROR_MESSAGES.NO_VALID_RECIPIENTS));
           }
 
           callback();
         } catch (error) {
           console.error("Error processing email:", error);
-          callback(new Error("Internal server error"));
+          callback(new Error(ERROR_MESSAGES.INTERNAL_ERROR));
         }
       });
 
       stream.on("error", (err) => {
         console.error("Stream error:", err);
-        callback(new Error("Stream error"));
+        callback(new Error(ERROR_MESSAGES.INTERNAL_ERROR));
       });
     },
 
-    // 日志
+    /**
+     * Connection opened handler
+     * @description Logs new SMTP connections
+     */
     onConnect(session, callback) {
       console.log(`SMTP connection from ${session.remoteAddress}`);
       callback();
     },
 
+    /**
+     * Connection closed handler
+     * @description Logs closed SMTP connections
+     */
     onClose(session) {
       console.log(`SMTP connection closed from ${session.remoteAddress}`);
     },
@@ -215,6 +307,27 @@ export function createSMTPServer(): SMTPServer {
   return server;
 }
 
+// ============================================================================
+// Server Startup
+// ============================================================================
+
+/**
+ * Start the SMTP server
+ *
+ * @description Creates and starts the SMTP server on the configured port.
+ * Sets up error handling for server errors.
+ *
+ * @returns The running SMTP server instance
+ *
+ * @example
+ * ```typescript
+ * const server = startSMTPServer();
+ * // Server is now listening on configured port
+ *
+ * // To stop the server:
+ * server.close();
+ * ```
+ */
 export function startSMTPServer(): SMTPServer {
   const server = createSMTPServer();
 

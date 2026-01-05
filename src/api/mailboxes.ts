@@ -1,68 +1,63 @@
+/**
+ * @fileoverview Mailbox Management API routes
+ * @description Handles mailbox registration and management.
+ *
+ * ## Overview
+ * This module manages email mailboxes (addresses):
+ * - Users can "claim" email addresses on available domains
+ * - Each mailbox is a combination of local_part@domain
+ * - Mailboxes on official domains are first-come-first-served
+ * - Mailboxes on custom domains are only for the domain owner
+ *
+ * ## Business Rules
+ * - Maximum 100 mailboxes per user
+ * - Local parts are case-insensitive (stored lowercase)
+ * - Reserved local parts (admin, postmaster, etc.) are blocked
+ * - Custom domain mailboxes require domain ownership
+ *
+ * @module api/mailboxes
+ */
+
 import { Elysia, t } from "elysia";
-import { db } from "../db";
 import { getAuthUser } from "./auth";
 import { validateLocalPart } from "../utils/validation";
+import { domainRepository, mailboxRepository } from "../db";
+import { ERROR_MESSAGES, LIMITS } from "../constants";
+import type { Mailbox } from "../types";
 
-interface Mailbox {
-  id: string;
-  local_part: string;
-  domain_id: string;
-  user_id: string;
-  created_at: number;
-}
+// ============================================================================
+// Route Definitions
+// ============================================================================
 
-interface Domain {
-  id: string;
-  name: string;
-  is_official: number;
-  verified: number;
-  user_id: string | null;
-}
-
-const queries = {
-  getUserMailboxes: db.prepare<Mailbox & { domain_name: string }, [string]>(`
-    SELECT m.*, d.name as domain_name
-    FROM mailboxes m
-    JOIN domains d ON m.domain_id = d.id
-    WHERE m.user_id = ?
-    ORDER BY m.created_at DESC
-  `),
-  getMailboxById: db.prepare<Mailbox & { domain_name: string }, [string]>(`
-    SELECT m.*, d.name as domain_name
-    FROM mailboxes m
-    JOIN domains d ON m.domain_id = d.id
-    WHERE m.id = ?
-  `),
-  getMailboxByAddress: db.prepare<Mailbox, [string, string]>(`
-    SELECT m.* FROM mailboxes m
-    JOIN domains d ON m.domain_id = d.id
-    WHERE m.local_part = ? AND d.name = ?
-  `),
-  checkMailboxExists: db.prepare<{ count: number }, [string, string]>(
-    "SELECT COUNT(*) as count FROM mailboxes WHERE local_part = ? AND domain_id = ?"
-  ),
-  getDomainById: db.prepare<Domain, [string]>("SELECT * FROM domains WHERE id = ?"),
-  getDomainByName: db.prepare<Domain, [string]>("SELECT * FROM domains WHERE name = ?"),
-  createMailbox: db.prepare(
-    "INSERT INTO mailboxes (id, local_part, domain_id, user_id) VALUES (?, ?, ?, ?)"
-  ),
-  deleteMailbox: db.prepare("DELETE FROM mailboxes WHERE id = ?"),
-  countUserMailboxes: db.prepare<{ count: number }, [string]>(
-    "SELECT COUNT(*) as count FROM mailboxes WHERE user_id = ?"
-  ),
-};
-
-const MAX_MAILBOXES_PER_USER = 100;
-
+/**
+ * Mailbox management routes
+ *
+ * @description Provides mailbox management functionality:
+ *
+ * - `GET /mailboxes` - List user's mailboxes
+ * - `POST /mailboxes` - Register a new mailbox
+ * - `GET /mailboxes/:id` - Get mailbox details
+ * - `DELETE /mailboxes/:id` - Delete a mailbox
+ */
 export const mailboxRoutes = new Elysia({ prefix: "/mailboxes" })
-  // 获取用户的所有邮箱
+
+  // ============================================================================
+  // List Mailboxes
+  // ============================================================================
+
+  /**
+   * Get user's mailboxes
+   * @route GET /api/mailboxes
+   * @description Returns all mailboxes owned by the current user.
+   * @returns List of mailboxes with full email addresses
+   */
   .get("/", ({ cookie }) => {
-    const user = getAuthUser(cookie.session.value);
+    const user = getAuthUser(cookie.session.value as string | undefined);
     if (!user) {
-      return { success: false, error: "Unauthorized" };
+      return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
     }
 
-    const mailboxes = queries.getUserMailboxes.all(user.id);
+    const mailboxes = mailboxRepository.findByUserId(user.id);
     return {
       success: true,
       mailboxes: mailboxes.map((m) => ({
@@ -75,55 +70,66 @@ export const mailboxRoutes = new Elysia({ prefix: "/mailboxes" })
     };
   })
 
-  // 注册邮箱地址 (抢注)
+  // ============================================================================
+  // Register Mailbox
+  // ============================================================================
+
+  /**
+   * Register a new mailbox
+   * @route POST /api/mailboxes
+   * @param body.localPart - The local part of the email (before @)
+   * @param body.domainId - The domain ID to use
+   * @description Claims a new email address. For official domains, addresses are
+   * first-come-first-served. For custom domains, only the domain owner can create mailboxes.
+   * @returns The created mailbox details
+   */
   .post(
     "/",
     ({ body, cookie }) => {
-      const user = getAuthUser(cookie.session.value);
+      const user = getAuthUser(cookie.session.value as string | undefined);
       if (!user) {
-        return { success: false, error: "Unauthorized" };
+        return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
       }
 
       const { localPart, domainId } = body;
       const normalizedLocalPart = localPart.toLowerCase().trim();
 
-      // 验证本地部分格式
+      // Validate local part format
       const validation = validateLocalPart(normalizedLocalPart);
       if (!validation.valid) {
         return { success: false, error: validation.error };
       }
 
-      // 检查域名是否存在且可用
-      const domain = queries.getDomainById.get(domainId);
+      // Check if domain exists and is available
+      const domain = domainRepository.findById(domainId);
       if (!domain) {
-        return { success: false, error: "Domain not found" };
+        return { success: false, error: ERROR_MESSAGES.DOMAIN_NOT_FOUND };
       }
 
-      // 域名必须是官方域名或已验证的用户域名
+      // Domain must be official or verified
       if (domain.is_official !== 1 && domain.verified !== 1) {
-        return { success: false, error: "Domain not verified" };
+        return { success: false, error: ERROR_MESSAGES.DOMAIN_NOT_VERIFIED };
       }
 
-      // 如果是用户自定义域名，只有域名拥有者可以创建邮箱
+      // For custom domains, only owner can create mailboxes
       if (domain.user_id && domain.user_id !== user.id) {
-        return { success: false, error: "You can only create mailboxes on your own domains" };
+        return { success: false, error: ERROR_MESSAGES.OWN_DOMAIN_ONLY };
       }
 
-      // 检查用户邮箱数量限制
-      const count = queries.countUserMailboxes.get(user.id);
-      if (count && count.count >= MAX_MAILBOXES_PER_USER) {
-        return { success: false, error: `Maximum ${MAX_MAILBOXES_PER_USER} mailboxes per user` };
+      // Check user mailbox limit
+      const count = mailboxRepository.countByUserId(user.id);
+      if (count >= LIMITS.MAX_MAILBOXES_PER_USER) {
+        return { success: false, error: ERROR_MESSAGES.MAX_MAILBOXES_REACHED };
       }
 
-      // 检查邮箱是否已被注册
-      const existing = queries.checkMailboxExists.get(normalizedLocalPart, domainId);
-      if (existing && existing.count > 0) {
-        return { success: false, error: "This email address is already taken" };
+      // Check if mailbox already exists
+      if (mailboxRepository.exists(normalizedLocalPart, domainId)) {
+        return { success: false, error: ERROR_MESSAGES.MAILBOX_TAKEN };
       }
 
-      // 创建邮箱
+      // Create the mailbox
       const mailboxId = crypto.randomUUID();
-      queries.createMailbox.run(mailboxId, normalizedLocalPart, domainId, user.id);
+      mailboxRepository.create(mailboxId, normalizedLocalPart, domainId, user.id);
 
       return {
         success: true,
@@ -143,20 +149,30 @@ export const mailboxRoutes = new Elysia({ prefix: "/mailboxes" })
     }
   )
 
-  // 获取单个邮箱详情
+  // ============================================================================
+  // Get Mailbox Details
+  // ============================================================================
+
+  /**
+   * Get mailbox details
+   * @route GET /api/mailboxes/:id
+   * @param params.id - The mailbox ID
+   * @description Returns detailed information about a specific mailbox.
+   * @returns Mailbox details
+   */
   .get("/:id", ({ params, cookie }) => {
-    const user = getAuthUser(cookie.session.value);
+    const user = getAuthUser(cookie.session.value as string | undefined);
     if (!user) {
-      return { success: false, error: "Unauthorized" };
+      return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
     }
 
-    const mailbox = queries.getMailboxById.get(params.id);
+    const mailbox = mailboxRepository.findById(params.id);
     if (!mailbox) {
-      return { success: false, error: "Mailbox not found" };
+      return { success: false, error: ERROR_MESSAGES.MAILBOX_NOT_FOUND };
     }
 
     if (mailbox.user_id !== user.id) {
-      return { success: false, error: "Not your mailbox" };
+      return { success: false, error: ERROR_MESSAGES.NOT_YOUR_MAILBOX };
     }
 
     return {
@@ -171,32 +187,71 @@ export const mailboxRoutes = new Elysia({ prefix: "/mailboxes" })
     };
   })
 
-  // 删除邮箱
+  // ============================================================================
+  // Delete Mailbox
+  // ============================================================================
+
+  /**
+   * Delete a mailbox
+   * @route DELETE /api/mailboxes/:id
+   * @param params.id - The mailbox ID
+   * @description Deletes a mailbox and all associated emails.
+   * This action is irreversible.
+   * @returns Success status
+   */
   .delete("/:id", ({ params, cookie }) => {
-    const user = getAuthUser(cookie.session.value);
+    const user = getAuthUser(cookie.session.value as string | undefined);
     if (!user) {
-      return { success: false, error: "Unauthorized" };
+      return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
     }
 
-    const mailbox = queries.getMailboxById.get(params.id);
+    const mailbox = mailboxRepository.findById(params.id);
     if (!mailbox) {
-      return { success: false, error: "Mailbox not found" };
+      return { success: false, error: ERROR_MESSAGES.MAILBOX_NOT_FOUND };
     }
 
     if (mailbox.user_id !== user.id) {
-      return { success: false, error: "Not your mailbox" };
+      return { success: false, error: ERROR_MESSAGES.NOT_YOUR_MAILBOX };
     }
 
-    queries.deleteMailbox.run(params.id);
+    mailboxRepository.delete(params.id);
     return { success: true };
   });
 
-// 导出查询函数供 SMTP 服务器使用
+// ============================================================================
+// Exported Functions for SMTP Server
+// ============================================================================
+
+/**
+ * Find a mailbox by email address
+ *
+ * @description Used by the SMTP server to validate recipients and store emails.
+ *
+ * @param localPart - The local part of the email (before @)
+ * @param domain - The domain name
+ * @returns The mailbox or null if not found
+ *
+ * @example
+ * ```typescript
+ * const mailbox = findMailboxByAddress("john", "example.com");
+ * if (mailbox) {
+ *   // Store email for this mailbox
+ * }
+ * ```
+ */
 export function findMailboxByAddress(localPart: string, domain: string): Mailbox | null {
-  return queries.getMailboxByAddress.get(localPart.toLowerCase(), domain.toLowerCase());
+  return mailboxRepository.findByAddress(localPart.toLowerCase(), domain.toLowerCase());
 }
 
+/**
+ * Get the owner of a mailbox
+ *
+ * @description Used to verify ownership for email access control.
+ *
+ * @param mailboxId - The mailbox ID
+ * @returns The user ID of the owner or null
+ */
 export function getMailboxOwner(mailboxId: string): string | null {
-  const mailbox = queries.getMailboxById.get(mailboxId);
+  const mailbox = mailboxRepository.findById(mailboxId);
   return mailbox?.user_id || null;
 }

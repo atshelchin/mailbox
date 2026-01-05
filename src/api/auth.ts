@@ -1,3 +1,21 @@
+/**
+ * @fileoverview Authentication API routes
+ * @description Handles user registration and authentication using WebAuthn/Passkeys.
+ *
+ * ## Overview
+ * This module implements passwordless authentication using the WebAuthn standard:
+ * - Registration: Users create an account with a username and register a Passkey
+ * - Login: Users authenticate using their registered Passkey
+ * - Sessions: Cookie-based sessions maintain authenticated state
+ *
+ * ## Authentication Flow
+ * 1. Registration: POST /options → User creates Passkey → POST /verify
+ * 2. Login: POST /options → User uses Passkey → POST /verify
+ * 3. Session cookie is set on successful authentication
+ *
+ * @module api/auth
+ */
+
 import { Elysia, t } from "elysia";
 import {
   generateRegistrationOptions,
@@ -10,101 +28,152 @@ import type {
   RegistrationResponseJSON,
   AuthenticationResponseJSON,
 } from "@simplewebauthn/types";
-import { db } from "../db";
+
 import { config } from "../config";
 import { validateUsername } from "../utils/validation";
+import {
+  userRepository,
+  credentialRepository,
+  challengeRepository,
+  sessionRepository,
+} from "../db";
+import type { AuthUser } from "../types";
+import { LIMITS, ERROR_MESSAGES } from "../constants";
 
-// 类型定义
-interface User {
-  id: string;
-  username: string;
-  created_at: number;
-}
+// ============================================================================
+// Helper Functions
+// ============================================================================
 
-interface Credential {
-  id: string;
-  user_id: string;
-  public_key: Uint8Array;
-  counter: number;
-  transports: string | null;
-}
-
-interface Challenge {
-  id: string;
-  user_id: string | null;
-  challenge: string;
-  type: string;
-  expires_at: number;
-}
-
-interface Session {
-  id: string;
-  user_id: string;
-  expires_at: number;
-}
-
-// 数据库操作
-const queries = {
-  getUserByUsername: db.prepare<User, [string]>("SELECT * FROM users WHERE username = ?"),
-  getUserById: db.prepare<User, [string]>("SELECT * FROM users WHERE id = ?"),
-  createUser: db.prepare("INSERT INTO users (id, username) VALUES (?, ?)"),
-
-  getCredentialsByUserId: db.prepare<Credential, [string]>("SELECT * FROM credentials WHERE user_id = ?"),
-  getCredentialById: db.prepare<Credential, [string]>("SELECT * FROM credentials WHERE id = ?"),
-  createCredential: db.prepare(
-    "INSERT INTO credentials (id, user_id, public_key, counter, transports) VALUES (?, ?, ?, ?, ?)"
-  ),
-  updateCredentialCounter: db.prepare("UPDATE credentials SET counter = ? WHERE id = ?"),
-
-  createChallenge: db.prepare(
-    "INSERT INTO challenges (id, user_id, challenge, type, expires_at) VALUES (?, ?, ?, ?, ?)"
-  ),
-  getChallenge: db.prepare<Challenge, [string, string]>(
-    "SELECT * FROM challenges WHERE user_id = ? AND type = ? ORDER BY created_at DESC LIMIT 1"
-  ),
-  getChallengeByValue: db.prepare<Challenge, [string, string]>(
-    "SELECT * FROM challenges WHERE challenge = ? AND type = ? ORDER BY created_at DESC LIMIT 1"
-  ),
-  deleteChallenge: db.prepare("DELETE FROM challenges WHERE id = ?"),
-
-  createSession: db.prepare("INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)"),
-  getSession: db.prepare<Session & { username: string }, [string]>(
-    "SELECT s.*, u.username FROM sessions s JOIN users u ON s.user_id = u.id WHERE s.id = ?"
-  ),
-  deleteSession: db.prepare("DELETE FROM sessions WHERE id = ?"),
-};
-
+/**
+ * Convert Uint8Array to base64url string
+ * @param arr - The byte array to encode
+ * @returns Base64url encoded string
+ */
 function uint8ArrayToBase64(arr: Uint8Array): string {
   return Buffer.from(arr).toString("base64url");
 }
 
-function base64ToUint8Array(base64: string): Uint8Array {
-  return new Uint8Array(Buffer.from(base64, "base64url"));
+/**
+ * Get the current Unix timestamp in seconds
+ * @returns Current timestamp
+ */
+function now(): number {
+  return Math.floor(Date.now() / 1000);
 }
 
+/**
+ * Create a new session for a user
+ * @param userId - The user ID
+ * @returns The session ID
+ */
+function createSession(userId: string): string {
+  const sessionId = crypto.randomUUID();
+  const expiresAt = now() + config.sessionMaxAge / 1000;
+  sessionRepository.create(sessionId, userId, expiresAt);
+  return sessionId;
+}
+
+/**
+ * Set the session cookie
+ * @param cookie - Elysia cookie object
+ * @param sessionId - The session ID to set
+ */
+function setSessionCookie(cookie: { session: { set: (opts: object) => void } }, sessionId: string): void {
+  cookie.session.set({
+    value: sessionId,
+    httpOnly: true,
+    secure: config.origin.startsWith("https"),
+    sameSite: "strict",
+    maxAge: config.sessionMaxAge / 1000,
+    path: "/",
+  });
+}
+
+// ============================================================================
+// Auth User Helper (exported for use by other modules)
+// ============================================================================
+
+/**
+ * Get the authenticated user from a session cookie
+ *
+ * @description Validates the session and returns the user info if valid.
+ * Automatically cleans up expired sessions.
+ *
+ * @param sessionId - The session ID from the cookie
+ * @returns The authenticated user or null if not authenticated
+ *
+ * @example
+ * ```typescript
+ * const user = getAuthUser(cookie.session.value);
+ * if (!user) {
+ *   return { success: false, error: "Unauthorized" };
+ * }
+ * ```
+ */
+export function getAuthUser(sessionId: string | undefined): AuthUser | null {
+  if (!sessionId) return null;
+
+  const session = sessionRepository.findById(sessionId);
+  if (!session) return null;
+
+  // Check if session is expired
+  if (session.expires_at < now()) {
+    sessionRepository.delete(sessionId);
+    return null;
+  }
+
+  return { id: session.user_id, username: session.username };
+}
+
+// ============================================================================
+// Route Definitions
+// ============================================================================
+
+/**
+ * Authentication routes
+ *
+ * @description Provides WebAuthn-based passwordless authentication:
+ *
+ * - `POST /register/options` - Get registration options for a new user
+ * - `POST /register/verify` - Complete registration with the Passkey response
+ * - `POST /login/options` - Get login options for an existing user
+ * - `POST /login/verify` - Complete login with the Passkey response
+ * - `POST /logout` - End the current session
+ * - `GET /me` - Get the current authenticated user
+ */
 export const authRoutes = new Elysia({ prefix: "/auth" })
-  // 注册 - 获取选项
+
+  // ============================================================================
+  // Registration
+  // ============================================================================
+
+  /**
+   * Get registration options
+   * @route POST /api/auth/register/options
+   * @param body.username - Desired username (3-32 chars, alphanumeric with _ and -)
+   * @returns Registration options for WebAuthn or error
+   */
   .post(
     "/register/options",
     async ({ body }) => {
       const { username } = body;
 
-      // 验证用户名
+      // Validate username format
       const validation = validateUsername(username);
       if (!validation.valid) {
         return { success: false, error: validation.error };
       }
 
-      // 检查用户名是否已存在
-      const existingUser = queries.getUserByUsername.get(username);
+      // Check if username is taken
+      const existingUser = userRepository.findByUsername(username);
       if (existingUser) {
-        return { success: false, error: "Username already exists" };
+        return { success: false, error: ERROR_MESSAGES.USERNAME_EXISTS };
       }
 
-      // 创建临时用户 ID
+      // Generate temporary user ID for the challenge
       const tempUserId = crypto.randomUUID();
 
-      // 生成注册选项
+      // Generate WebAuthn registration options
       const options = await generateRegistrationOptions({
         rpName: config.rpName,
         rpID: config.rpID,
@@ -117,9 +186,9 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
         },
       });
 
-      // 存储挑战
-      const challengeExpires = Math.floor(Date.now() / 1000) + 300; // 5 分钟
-      queries.createChallenge.run(
+      // Store challenge with expiration
+      const challengeExpires = now() + LIMITS.CHALLENGE_EXPIRATION_SECONDS;
+      challengeRepository.create(
         crypto.randomUUID(),
         tempUserId,
         options.challenge,
@@ -140,24 +209,32 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
     }
   )
 
-  // 注册 - 验证响应
+  /**
+   * Verify registration response
+   * @route POST /api/auth/register/verify
+   * @param body.username - The username
+   * @param body.tempUserId - Temporary user ID from options request
+   * @param body.response - WebAuthn response from authenticator
+   * @returns User info and sets session cookie on success
+   */
   .post(
     "/register/verify",
     async ({ body, cookie }) => {
       const { username, tempUserId, response } = body;
 
-      // 获取挑战
-      const challengeRecord = queries.getChallenge.get(tempUserId, "registration");
+      // Find and validate the challenge
+      const challengeRecord = challengeRepository.findByUserIdAndType(tempUserId, "registration");
       if (!challengeRecord) {
-        return { success: false, error: "Challenge not found or expired" };
+        return { success: false, error: ERROR_MESSAGES.CHALLENGE_NOT_FOUND };
       }
 
-      if (challengeRecord.expires_at < Math.floor(Date.now() / 1000)) {
-        queries.deleteChallenge.run(challengeRecord.id);
-        return { success: false, error: "Challenge expired" };
+      if (challengeRecord.expires_at < now()) {
+        challengeRepository.delete(challengeRecord.id);
+        return { success: false, error: ERROR_MESSAGES.CHALLENGE_EXPIRED };
       }
 
       try {
+        // Verify the WebAuthn response
         const verification = await verifyRegistrationResponse({
           response: response as RegistrationResponseJSON,
           expectedChallenge: challengeRecord.challenge,
@@ -166,19 +243,19 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
         });
 
         if (!verification.verified || !verification.registrationInfo) {
-          return { success: false, error: "Verification failed" };
+          return { success: false, error: ERROR_MESSAGES.VERIFICATION_FAILED };
         }
 
-        // 删除挑战
-        queries.deleteChallenge.run(challengeRecord.id);
+        // Clean up the challenge
+        challengeRepository.delete(challengeRecord.id);
 
-        // 创建用户
+        // Create the user
         const userId = crypto.randomUUID();
-        queries.createUser.run(userId, username);
+        userRepository.create(userId, username);
 
-        // 存储凭证
+        // Store the credential
         const { credential } = verification.registrationInfo;
-        queries.createCredential.run(
+        credentialRepository.create(
           uint8ArrayToBase64(credential.id),
           userId,
           Buffer.from(credential.publicKey),
@@ -186,19 +263,9 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
           JSON.stringify(credential.transports || [])
         );
 
-        // 创建 session
-        const sessionId = crypto.randomUUID();
-        const sessionExpires = Math.floor(Date.now() / 1000) + config.sessionMaxAge / 1000;
-        queries.createSession.run(sessionId, userId, sessionExpires);
-
-        cookie.session.set({
-          value: sessionId,
-          httpOnly: true,
-          secure: config.origin.startsWith("https"),
-          sameSite: "strict",
-          maxAge: config.sessionMaxAge / 1000,
-          path: "/",
-        });
+        // Create session and set cookie
+        const sessionId = createSession(userId);
+        setSessionCookie(cookie, sessionId);
 
         return {
           success: true,
@@ -217,25 +284,34 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
     }
   )
 
-  // 登录 - 获取选项
+  // ============================================================================
+  // Login
+  // ============================================================================
+
+  /**
+   * Get login options
+   * @route POST /api/auth/login/options
+   * @param body.username - The username to authenticate
+   * @returns Authentication options for WebAuthn or error
+   */
   .post(
     "/login/options",
     async ({ body }) => {
       const { username } = body;
 
-      // 获取用户
-      const user = queries.getUserByUsername.get(username);
+      // Find the user
+      const user = userRepository.findByUsername(username);
       if (!user) {
-        return { success: false, error: "User not found" };
+        return { success: false, error: ERROR_MESSAGES.USER_NOT_FOUND };
       }
 
-      // 获取用户的凭证
-      const credentials = queries.getCredentialsByUserId.all(user.id);
+      // Get user's credentials
+      const credentials = credentialRepository.findByUserId(user.id);
       if (credentials.length === 0) {
-        return { success: false, error: "No credentials found" };
+        return { success: false, error: ERROR_MESSAGES.NO_CREDENTIALS };
       }
 
-      // 生成认证选项
+      // Generate authentication options
       const options = await generateAuthenticationOptions({
         rpID: config.rpID,
         allowCredentials: credentials.map((cred) => ({
@@ -247,9 +323,9 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
         userVerification: "preferred",
       });
 
-      // 存储挑战
-      const challengeExpires = Math.floor(Date.now() / 1000) + 300;
-      queries.createChallenge.run(
+      // Store challenge
+      const challengeExpires = now() + LIMITS.CHALLENGE_EXPIRATION_SECONDS;
+      challengeRepository.create(
         crypto.randomUUID(),
         user.id,
         options.challenge,
@@ -270,36 +346,43 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
     }
   )
 
-  // 登录 - 验证响应
+  /**
+   * Verify login response
+   * @route POST /api/auth/login/verify
+   * @param body.userId - The user ID from options request
+   * @param body.response - WebAuthn response from authenticator
+   * @returns User info and sets session cookie on success
+   */
   .post(
     "/login/verify",
     async ({ body, cookie }) => {
       const { userId, response } = body;
 
-      // 获取用户
-      const user = queries.getUserById.get(userId);
+      // Find the user
+      const user = userRepository.findById(userId);
       if (!user) {
-        return { success: false, error: "User not found" };
+        return { success: false, error: ERROR_MESSAGES.USER_NOT_FOUND };
       }
 
-      // 获取挑战
-      const challengeRecord = queries.getChallenge.get(userId, "authentication");
+      // Find and validate the challenge
+      const challengeRecord = challengeRepository.findByUserIdAndType(userId, "authentication");
       if (!challengeRecord) {
-        return { success: false, error: "Challenge not found or expired" };
+        return { success: false, error: ERROR_MESSAGES.CHALLENGE_NOT_FOUND };
       }
 
-      if (challengeRecord.expires_at < Math.floor(Date.now() / 1000)) {
-        queries.deleteChallenge.run(challengeRecord.id);
-        return { success: false, error: "Challenge expired" };
+      if (challengeRecord.expires_at < now()) {
+        challengeRepository.delete(challengeRecord.id);
+        return { success: false, error: ERROR_MESSAGES.CHALLENGE_EXPIRED };
       }
 
-      // 获取凭证
-      const credential = queries.getCredentialById.get(response.id);
+      // Find the credential
+      const credential = credentialRepository.findById(response.id);
       if (!credential || credential.user_id !== userId) {
-        return { success: false, error: "Credential not found" };
+        return { success: false, error: ERROR_MESSAGES.CREDENTIAL_NOT_FOUND };
       }
 
       try {
+        // Verify the authentication response
         const verification = await verifyAuthenticationResponse({
           response: response as AuthenticationResponseJSON,
           expectedChallenge: challengeRecord.challenge,
@@ -316,31 +399,16 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
         });
 
         if (!verification.verified) {
-          return { success: false, error: "Verification failed" };
+          return { success: false, error: ERROR_MESSAGES.VERIFICATION_FAILED };
         }
 
-        // 删除挑战
-        queries.deleteChallenge.run(challengeRecord.id);
+        // Clean up challenge and update counter
+        challengeRepository.delete(challengeRecord.id);
+        credentialRepository.updateCounter(credential.id, verification.authenticationInfo.newCounter);
 
-        // 更新计数器
-        queries.updateCredentialCounter.run(
-          verification.authenticationInfo.newCounter,
-          credential.id
-        );
-
-        // 创建 session
-        const sessionId = crypto.randomUUID();
-        const sessionExpires = Math.floor(Date.now() / 1000) + config.sessionMaxAge / 1000;
-        queries.createSession.run(sessionId, userId, sessionExpires);
-
-        cookie.session.set({
-          value: sessionId,
-          httpOnly: true,
-          secure: config.origin.startsWith("https"),
-          sameSite: "strict",
-          maxAge: config.sessionMaxAge / 1000,
-          path: "/",
-        });
+        // Create session and set cookie
+        const sessionId = createSession(userId);
+        setSessionCookie(cookie, sessionId);
 
         return {
           success: true,
@@ -358,50 +426,37 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
     }
   )
 
-  // 登出
+  // ============================================================================
+  // Session Management
+  // ============================================================================
+
+  /**
+   * Logout - end current session
+   * @route POST /api/auth/logout
+   * @returns Success status
+   */
   .post("/logout", ({ cookie }) => {
     const sessionId = cookie.session.value;
     if (sessionId) {
-      queries.deleteSession.run(sessionId);
+      sessionRepository.delete(sessionId);
       cookie.session.remove();
     }
     return { success: true };
   })
 
-  // 获取当前用户
+  /**
+   * Get current user info
+   * @route GET /api/auth/me
+   * @returns Current user info or error if not authenticated
+   */
   .get("/me", ({ cookie }) => {
-    const sessionId = cookie.session.value;
-    if (!sessionId) {
-      return { success: false, error: "Not authenticated" };
-    }
-
-    const session = queries.getSession.get(sessionId);
-    if (!session) {
-      return { success: false, error: "Session not found" };
-    }
-
-    if (session.expires_at < Math.floor(Date.now() / 1000)) {
-      queries.deleteSession.run(sessionId);
-      return { success: false, error: "Session expired" };
+    const user = getAuthUser(cookie.session.value);
+    if (!user) {
+      return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
     }
 
     return {
       success: true,
-      user: { id: session.user_id, username: session.username },
+      user,
     };
   });
-
-// 认证中间件
-export function getAuthUser(sessionId: string | undefined): { id: string; username: string } | null {
-  if (!sessionId) return null;
-
-  const session = queries.getSession.get(sessionId);
-  if (!session) return null;
-
-  if (session.expires_at < Math.floor(Date.now() / 1000)) {
-    queries.deleteSession.run(sessionId);
-    return null;
-  }
-
-  return { id: session.user_id, username: session.username };
-}

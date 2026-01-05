@@ -1,85 +1,72 @@
+/**
+ * @fileoverview Email Management API routes
+ * @description Handles email retrieval, viewing, and deletion.
+ *
+ * ## Overview
+ * This module provides read-only access to received emails:
+ * - List emails in a mailbox
+ * - View email details (text/HTML body)
+ * - Download raw email (.eml format)
+ * - Download attachments
+ * - Delete emails
+ *
+ * ## Security
+ * All endpoints require authentication and verify mailbox ownership.
+ * Users can only access emails in their own mailboxes.
+ *
+ * @module api/emails
+ */
+
 import { Elysia } from "elysia";
-import { db } from "../db";
 import { getAuthUser } from "./auth";
+import { emailRepository } from "../db";
+import { ERROR_MESSAGES } from "../constants";
 
-interface Email {
-  id: string;
-  mailbox_id: string;
-  from_address: string;
-  to_address: string;
-  subject: string | null;
-  text_body: string | null;
-  html_body: string | null;
-  raw_email: Uint8Array | null;
-  size: number | null;
-  received_at: number;
-}
+// ============================================================================
+// Route Definitions
+// ============================================================================
 
-interface Attachment {
-  id: string;
-  email_id: string;
-  filename: string | null;
-  content_type: string | null;
-  size: number | null;
-  content: Uint8Array | null;
-}
-
-interface Mailbox {
-  id: string;
-  user_id: string;
-  local_part: string;
-  domain_name: string;
-}
-
-const queries = {
-  getMailboxById: db.prepare<Mailbox, [string]>(`
-    SELECT m.id, m.user_id, m.local_part, d.name as domain_name
-    FROM mailboxes m
-    JOIN domains d ON m.domain_id = d.id
-    WHERE m.id = ?
-  `),
-  getEmailsByMailbox: db.prepare<Email, [string]>(`
-    SELECT id, mailbox_id, from_address, to_address, subject, size, received_at
-    FROM emails
-    WHERE mailbox_id = ?
-    ORDER BY received_at DESC
-    LIMIT 100
-  `),
-  getEmailById: db.prepare<Email, [string]>("SELECT * FROM emails WHERE id = ?"),
-  getEmailMailboxOwner: db.prepare<{ user_id: string }, [string]>(`
-    SELECT m.user_id FROM emails e
-    JOIN mailboxes m ON e.mailbox_id = m.id
-    WHERE e.id = ?
-  `),
-  getAttachmentsByEmail: db.prepare<Attachment, [string]>(
-    "SELECT id, email_id, filename, content_type, size FROM attachments WHERE email_id = ?"
-  ),
-  getAttachmentById: db.prepare<Attachment, [string]>("SELECT * FROM attachments WHERE id = ?"),
-  deleteEmail: db.prepare("DELETE FROM emails WHERE id = ?"),
-  countUnreadByMailbox: db.prepare<{ count: number }, [string]>(
-    "SELECT COUNT(*) as count FROM emails WHERE mailbox_id = ?"
-  ),
-};
-
+/**
+ * Email management routes
+ *
+ * @description Provides email access functionality:
+ *
+ * - `GET /emails/mailbox/:mailboxId` - List emails in a mailbox
+ * - `GET /emails/:id` - Get email details
+ * - `GET /emails/:id/raw` - Download raw email (.eml)
+ * - `DELETE /emails/:id` - Delete an email
+ */
 export const emailRoutes = new Elysia({ prefix: "/emails" })
-  // 获取邮箱的邮件列表
+
+  // ============================================================================
+  // List Emails
+  // ============================================================================
+
+  /**
+   * Get emails in a mailbox
+   * @route GET /api/emails/mailbox/:mailboxId
+   * @param params.mailboxId - The mailbox ID
+   * @description Returns a list of emails in the specified mailbox,
+   * sorted by received date (newest first). Limited to 100 emails.
+   * @returns List of emails with metadata
+   */
   .get("/mailbox/:mailboxId", ({ params, cookie }) => {
     const user = getAuthUser(cookie.session.value as string | undefined);
     if (!user) {
-      return { success: false, error: "Unauthorized" };
+      return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
     }
 
-    const mailbox = queries.getMailboxById.get(params.mailboxId);
+    const mailbox = emailRepository.getMailboxById(params.mailboxId);
     if (!mailbox) {
-      return { success: false, error: "Mailbox not found" };
+      return { success: false, error: ERROR_MESSAGES.MAILBOX_NOT_FOUND };
     }
 
     if (mailbox.user_id !== user.id) {
-      return { success: false, error: "Not your mailbox" };
+      return { success: false, error: ERROR_MESSAGES.NOT_YOUR_MAILBOX };
     }
 
-    const emails = queries.getEmailsByMailbox.all(params.mailboxId);
-    const count = queries.countUnreadByMailbox.get(params.mailboxId);
+    const emails = emailRepository.findByMailboxId(params.mailboxId);
+    const total = emailRepository.countByMailboxId(params.mailboxId);
 
     return {
       success: true,
@@ -87,7 +74,7 @@ export const emailRoutes = new Elysia({ prefix: "/emails" })
         id: mailbox.id,
         address: `${mailbox.local_part}@${mailbox.domain_name}`,
       },
-      total: count?.count || 0,
+      total,
       emails: emails.map((e) => ({
         id: e.id,
         from: e.from_address,
@@ -99,28 +86,39 @@ export const emailRoutes = new Elysia({ prefix: "/emails" })
     };
   })
 
-  // 获取邮件详情
+  // ============================================================================
+  // Get Email Details
+  // ============================================================================
+
+  /**
+   * Get email details
+   * @route GET /api/emails/:id
+   * @param params.id - The email ID
+   * @description Returns full email details including body content
+   * and attachment metadata. Does not include attachment content.
+   * @returns Email details with body and attachments list
+   */
   .get("/:id", ({ params, cookie }) => {
     const user = getAuthUser(cookie.session.value as string | undefined);
     if (!user) {
-      return { success: false, error: "Unauthorized" };
+      return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
     }
 
-    const owner = queries.getEmailMailboxOwner.get(params.id);
-    if (!owner) {
-      return { success: false, error: "Email not found" };
+    const ownerUserId = emailRepository.getOwnerUserId(params.id);
+    if (!ownerUserId) {
+      return { success: false, error: ERROR_MESSAGES.EMAIL_NOT_FOUND };
     }
 
-    if (owner.user_id !== user.id) {
-      return { success: false, error: "Not your email" };
+    if (ownerUserId !== user.id) {
+      return { success: false, error: ERROR_MESSAGES.NOT_YOUR_EMAIL };
     }
 
-    const email = queries.getEmailById.get(params.id);
+    const email = emailRepository.findById(params.id);
     if (!email) {
-      return { success: false, error: "Email not found" };
+      return { success: false, error: ERROR_MESSAGES.EMAIL_NOT_FOUND };
     }
 
-    const attachments = queries.getAttachmentsByEmail.all(params.id);
+    const attachments = emailRepository.findAttachmentsByEmailId(params.id);
 
     return {
       success: true,
@@ -143,29 +141,40 @@ export const emailRoutes = new Elysia({ prefix: "/emails" })
     };
   })
 
-  // 获取原始邮件
+  // ============================================================================
+  // Download Raw Email
+  // ============================================================================
+
+  /**
+   * Download raw email
+   * @route GET /api/emails/:id/raw
+   * @param params.id - The email ID
+   * @description Downloads the original raw email in .eml format.
+   * This is the complete email as received by the SMTP server.
+   * @returns Raw email file (message/rfc822)
+   */
   .get("/:id/raw", ({ params, cookie, set }) => {
     const user = getAuthUser(cookie.session.value as string | undefined);
     if (!user) {
       set.status = 401;
-      return { success: false, error: "Unauthorized" };
+      return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
     }
 
-    const owner = queries.getEmailMailboxOwner.get(params.id);
-    if (!owner) {
+    const ownerUserId = emailRepository.getOwnerUserId(params.id);
+    if (!ownerUserId) {
       set.status = 404;
-      return { success: false, error: "Email not found" };
+      return { success: false, error: ERROR_MESSAGES.EMAIL_NOT_FOUND };
     }
 
-    if (owner.user_id !== user.id) {
+    if (ownerUserId !== user.id) {
       set.status = 403;
-      return { success: false, error: "Not your email" };
+      return { success: false, error: ERROR_MESSAGES.NOT_YOUR_EMAIL };
     }
 
-    const email = queries.getEmailById.get(params.id);
+    const email = emailRepository.findById(params.id);
     if (!email || !email.raw_email) {
       set.status = 404;
-      return { success: false, error: "Raw email not found" };
+      return { success: false, error: ERROR_MESSAGES.RAW_EMAIL_NOT_FOUND };
     }
 
     set.headers["Content-Type"] = "message/rfc822";
@@ -174,51 +183,81 @@ export const emailRoutes = new Elysia({ prefix: "/emails" })
     return new Response(Buffer.from(email.raw_email));
   })
 
-  // 删除邮件
+  // ============================================================================
+  // Delete Email
+  // ============================================================================
+
+  /**
+   * Delete an email
+   * @route DELETE /api/emails/:id
+   * @param params.id - The email ID
+   * @description Permanently deletes an email and all its attachments.
+   * This action is irreversible.
+   * @returns Success status
+   */
   .delete("/:id", ({ params, cookie }) => {
     const user = getAuthUser(cookie.session.value as string | undefined);
     if (!user) {
-      return { success: false, error: "Unauthorized" };
+      return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
     }
 
-    const owner = queries.getEmailMailboxOwner.get(params.id);
-    if (!owner) {
-      return { success: false, error: "Email not found" };
+    const ownerUserId = emailRepository.getOwnerUserId(params.id);
+    if (!ownerUserId) {
+      return { success: false, error: ERROR_MESSAGES.EMAIL_NOT_FOUND };
     }
 
-    if (owner.user_id !== user.id) {
-      return { success: false, error: "Not your email" };
+    if (ownerUserId !== user.id) {
+      return { success: false, error: ERROR_MESSAGES.NOT_YOUR_EMAIL };
     }
 
-    queries.deleteEmail.run(params.id);
+    emailRepository.delete(params.id);
     return { success: true };
   });
 
-// 附件路由 - 单独的路由组避免参数名冲突
+// ============================================================================
+// Attachment Routes
+// ============================================================================
+
+/**
+ * Attachment download routes
+ *
+ * @description Separated from email routes to avoid parameter conflicts.
+ *
+ * - `GET /attachments/:id` - Download an attachment
+ */
 export const attachmentRoutes = new Elysia({ prefix: "/attachments" })
+
+  /**
+   * Download an attachment
+   * @route GET /api/attachments/:id
+   * @param params.id - The attachment ID
+   * @description Downloads an email attachment. Verifies that the user
+   * owns the mailbox containing the email with this attachment.
+   * @returns Attachment file with appropriate content type
+   */
   .get("/:id", ({ params, cookie, set }) => {
     const user = getAuthUser(cookie.session.value as string | undefined);
     if (!user) {
       set.status = 401;
-      return { success: false, error: "Unauthorized" };
+      return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
     }
 
-    const attachment = queries.getAttachmentById.get(params.id);
+    const attachment = emailRepository.findAttachmentById(params.id);
     if (!attachment) {
       set.status = 404;
-      return { success: false, error: "Attachment not found" };
+      return { success: false, error: ERROR_MESSAGES.ATTACHMENT_NOT_FOUND };
     }
 
-    // 验证邮件所有权
-    const owner = queries.getEmailMailboxOwner.get(attachment.email_id);
-    if (!owner || owner.user_id !== user.id) {
+    // Verify email ownership
+    const ownerUserId = emailRepository.getOwnerUserId(attachment.email_id);
+    if (!ownerUserId || ownerUserId !== user.id) {
       set.status = 403;
-      return { success: false, error: "Not your attachment" };
+      return { success: false, error: ERROR_MESSAGES.NOT_YOUR_ATTACHMENT };
     }
 
     if (!attachment.content) {
       set.status = 404;
-      return { success: false, error: "Attachment content not found" };
+      return { success: false, error: ERROR_MESSAGES.ATTACHMENT_CONTENT_NOT_FOUND };
     }
 
     set.headers["Content-Type"] = attachment.content_type || "application/octet-stream";

@@ -1,45 +1,66 @@
+/**
+ * @fileoverview Domain Management API routes
+ * @description Handles domain registration, verification, and management.
+ *
+ * ## Overview
+ * This module manages email domains:
+ * - Official domains: Pre-configured domains anyone can use
+ * - User domains: Custom domains verified via DNS TXT records
+ *
+ * ## Domain Verification Flow
+ * 1. User adds a domain: POST /domains
+ * 2. System returns a TXT record value
+ * 3. User adds TXT record to their DNS
+ * 4. User triggers verification: POST /domains/:id/verify
+ * 5. System checks DNS and marks domain as verified
+ *
+ * @module api/domains
+ */
+
 import { Elysia, t } from "elysia";
-import { db } from "../db";
 import { config } from "../config";
 import { getAuthUser } from "./auth";
 import { validateDomain } from "../utils/validation";
 import { verifyTxtRecord, generateTxtRecord } from "../utils/dns";
+import { domainRepository } from "../db";
+import { ERROR_MESSAGES } from "../constants";
 
-interface Domain {
-  id: string;
-  name: string;
-  user_id: string | null;
-  txt_record: string | null;
-  verified: number;
-  is_official: number;
-  created_at: number;
-}
+// ============================================================================
+// Route Definitions
+// ============================================================================
 
-const queries = {
-  getAllDomains: db.prepare<Domain, []>(
-    "SELECT * FROM domains WHERE is_official = 1 OR verified = 1 ORDER BY is_official DESC, name ASC"
-  ),
-  getUserDomains: db.prepare<Domain, [string]>(
-    "SELECT * FROM domains WHERE user_id = ? ORDER BY created_at DESC"
-  ),
-  getDomainById: db.prepare<Domain, [string]>("SELECT * FROM domains WHERE id = ?"),
-  getDomainByName: db.prepare<Domain, [string]>("SELECT * FROM domains WHERE name = ?"),
-  createDomain: db.prepare(
-    "INSERT INTO domains (id, name, user_id, txt_record) VALUES (?, ?, ?, ?)"
-  ),
-  updateDomainVerified: db.prepare("UPDATE domains SET verified = 1 WHERE id = ?"),
-  deleteDomain: db.prepare("DELETE FROM domains WHERE id = ?"),
-};
-
+/**
+ * Domain management routes
+ *
+ * @description Provides domain management functionality:
+ *
+ * - `GET /domains` - List all available domains (official + verified)
+ * - `GET /domains/mine` - List user's own domains
+ * - `POST /domains` - Add a new custom domain
+ * - `GET /domains/:id/verify` - Get verification instructions
+ * - `POST /domains/:id/verify` - Verify domain ownership via DNS
+ * - `DELETE /domains/:id` - Delete a custom domain
+ */
 export const domainRoutes = new Elysia({ prefix: "/domains" })
-  // 获取所有可用域名 (官方 + 已验证的用户域名)
+
+  // ============================================================================
+  // List Domains
+  // ============================================================================
+
+  /**
+   * Get all available domains
+   * @route GET /api/domains
+   * @description Returns all official domains and verified user domains.
+   * Used to populate domain selection dropdowns.
+   * @returns List of available domains with ownership info
+   */
   .get("/", ({ cookie }) => {
-    const user = getAuthUser(cookie.session.value);
+    const user = getAuthUser(cookie.session.value as string | undefined);
     if (!user) {
-      return { success: false, error: "Unauthorized" };
+      return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
     }
 
-    const domains = queries.getAllDomains.all();
+    const domains = domainRepository.findAllAvailable();
     return {
       success: true,
       domains: domains.map((d) => ({
@@ -51,14 +72,20 @@ export const domainRoutes = new Elysia({ prefix: "/domains" })
     };
   })
 
-  // 获取用户自己的域名
+  /**
+   * Get user's own domains
+   * @route GET /api/domains/mine
+   * @description Returns all domains owned by the current user,
+   * including pending verification status.
+   * @returns List of user's domains with verification details
+   */
   .get("/mine", ({ cookie }) => {
-    const user = getAuthUser(cookie.session.value);
+    const user = getAuthUser(cookie.session.value as string | undefined);
     if (!user) {
-      return { success: false, error: "Unauthorized" };
+      return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
     }
 
-    const domains = queries.getUserDomains.all(user.id);
+    const domains = domainRepository.findByUserId(user.id);
     return {
       success: true,
       domains: domains.map((d) => ({
@@ -71,40 +98,51 @@ export const domainRoutes = new Elysia({ prefix: "/domains" })
     };
   })
 
-  // 添加自定义域名
+  // ============================================================================
+  // Add Domain
+  // ============================================================================
+
+  /**
+   * Add a custom domain
+   * @route POST /api/domains
+   * @param body.name - The domain name to add
+   * @description Registers a new custom domain. The domain must be verified
+   * via DNS TXT record before it can be used to create mailboxes.
+   * @returns Domain details with verification instructions
+   */
   .post(
     "/",
     ({ body, cookie }) => {
-      const user = getAuthUser(cookie.session.value);
+      const user = getAuthUser(cookie.session.value as string | undefined);
       if (!user) {
-        return { success: false, error: "Unauthorized" };
+        return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
       }
 
       const { name } = body;
       const domainName = name.toLowerCase().trim();
 
-      // 验证域名格式
+      // Validate domain format
       const validation = validateDomain(domainName);
       if (!validation.valid) {
         return { success: false, error: validation.error };
       }
 
-      // 检查是否是官方域名
+      // Check if it's an official domain
       if (config.officialDomains.includes(domainName)) {
-        return { success: false, error: "Cannot add official domain" };
+        return { success: false, error: ERROR_MESSAGES.CANNOT_ADD_OFFICIAL };
       }
 
-      // 检查域名是否已存在
-      const existing = queries.getDomainByName.get(domainName);
+      // Check if domain already exists
+      const existing = domainRepository.findByName(domainName);
       if (existing) {
-        return { success: false, error: "Domain already exists" };
+        return { success: false, error: ERROR_MESSAGES.DOMAIN_EXISTS };
       }
 
-      // 生成 TXT 记录
+      // Generate TXT record for verification
       const txtRecord = generateTxtRecord();
       const domainId = crypto.randomUUID();
 
-      queries.createDomain.run(domainId, domainName, user.id, txtRecord);
+      domainRepository.create(domainId, domainName, user.id, txtRecord);
 
       return {
         success: true,
@@ -123,20 +161,31 @@ export const domainRoutes = new Elysia({ prefix: "/domains" })
     }
   )
 
-  // 获取域名验证信息
+  // ============================================================================
+  // Domain Verification
+  // ============================================================================
+
+  /**
+   * Get domain verification info
+   * @route GET /api/domains/:id/verify
+   * @param params.id - The domain ID
+   * @description Returns verification status and instructions for adding
+   * the required DNS TXT record.
+   * @returns Verification status and DNS instructions
+   */
   .get("/:id/verify", ({ params, cookie }) => {
-    const user = getAuthUser(cookie.session.value);
+    const user = getAuthUser(cookie.session.value as string | undefined);
     if (!user) {
-      return { success: false, error: "Unauthorized" };
+      return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
     }
 
-    const domain = queries.getDomainById.get(params.id);
+    const domain = domainRepository.findById(params.id);
     if (!domain) {
-      return { success: false, error: "Domain not found" };
+      return { success: false, error: ERROR_MESSAGES.DOMAIN_NOT_FOUND };
     }
 
     if (domain.user_id !== user.id) {
-      return { success: false, error: "Not your domain" };
+      return { success: false, error: ERROR_MESSAGES.NOT_YOUR_DOMAIN };
     }
 
     if (domain.verified === 1) {
@@ -152,20 +201,28 @@ export const domainRoutes = new Elysia({ prefix: "/domains" })
     };
   })
 
-  // 验证域名所有权
+  /**
+   * Verify domain ownership
+   * @route POST /api/domains/:id/verify
+   * @param params.id - The domain ID
+   * @description Checks DNS for the required TXT record. Supports two formats:
+   * - `_mailbox-verify.domain.com` (subdomain record)
+   * - `domain.com` (root domain record)
+   * @returns Verification result
+   */
   .post("/:id/verify", async ({ params, cookie }) => {
-    const user = getAuthUser(cookie.session.value);
+    const user = getAuthUser(cookie.session.value as string | undefined);
     if (!user) {
-      return { success: false, error: "Unauthorized" };
+      return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
     }
 
-    const domain = queries.getDomainById.get(params.id);
+    const domain = domainRepository.findById(params.id);
     if (!domain) {
-      return { success: false, error: "Domain not found" };
+      return { success: false, error: ERROR_MESSAGES.DOMAIN_NOT_FOUND };
     }
 
     if (domain.user_id !== user.id) {
-      return { success: false, error: "Not your domain" };
+      return { success: false, error: ERROR_MESSAGES.NOT_YOUR_DOMAIN };
     }
 
     if (domain.verified === 1) {
@@ -173,46 +230,57 @@ export const domainRoutes = new Elysia({ prefix: "/domains" })
     }
 
     if (!domain.txt_record) {
-      return { success: false, error: "No TXT record found" };
+      return { success: false, error: ERROR_MESSAGES.TXT_RECORD_NOT_FOUND };
     }
 
-    // 尝试两种验证方式
+    // Try both verification methods
     const verified =
       (await verifyTxtRecord(`_mailbox-verify.${domain.name}`, domain.txt_record)) ||
       (await verifyTxtRecord(domain.name, domain.txt_record));
 
     if (verified) {
-      queries.updateDomainVerified.run(domain.id);
+      domainRepository.setVerified(domain.id);
       return { success: true, verified: true };
     }
 
     return {
       success: false,
       verified: false,
-      error: "TXT record not found. Please make sure you have added the TXT record and wait for DNS propagation.",
+      error: ERROR_MESSAGES.TXT_RECORD_NOT_FOUND,
     };
   })
 
-  // 删除域名
+  // ============================================================================
+  // Delete Domain
+  // ============================================================================
+
+  /**
+   * Delete a custom domain
+   * @route DELETE /api/domains/:id
+   * @param params.id - The domain ID
+   * @description Deletes a user's custom domain. Official domains cannot be deleted.
+   * Deleting a domain will cascade delete all associated mailboxes.
+   * @returns Success status
+   */
   .delete("/:id", ({ params, cookie }) => {
-    const user = getAuthUser(cookie.session.value);
+    const user = getAuthUser(cookie.session.value as string | undefined);
     if (!user) {
-      return { success: false, error: "Unauthorized" };
+      return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
     }
 
-    const domain = queries.getDomainById.get(params.id);
+    const domain = domainRepository.findById(params.id);
     if (!domain) {
-      return { success: false, error: "Domain not found" };
+      return { success: false, error: ERROR_MESSAGES.DOMAIN_NOT_FOUND };
     }
 
     if (domain.user_id !== user.id) {
-      return { success: false, error: "Not your domain" };
+      return { success: false, error: ERROR_MESSAGES.NOT_YOUR_DOMAIN };
     }
 
     if (domain.is_official === 1) {
-      return { success: false, error: "Cannot delete official domain" };
+      return { success: false, error: ERROR_MESSAGES.CANNOT_DELETE_OFFICIAL };
     }
 
-    queries.deleteDomain.run(domain.id);
+    domainRepository.delete(domain.id);
     return { success: true };
   });
