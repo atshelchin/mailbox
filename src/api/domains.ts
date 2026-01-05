@@ -41,7 +41,7 @@ import {
   getMxRecords,
 } from "../utils/dns";
 import { domainRepository, userRepository } from "../db";
-import { ERROR_MESSAGES } from "../constants";
+import { ERROR_MESSAGES, LIMITS } from "../constants";
 import { DomainVisibility } from "../types";
 
 // ============================================================================
@@ -102,32 +102,58 @@ export const domainRoutes = new Elysia({ prefix: "/domains" })
   /**
    * Get user's own domains
    * @route GET /api/domains/mine
-   * @description Returns all domains owned by the current user,
+   * @description Returns domains owned by the current user with pagination,
    * including pending verification status and visibility settings.
-   * @returns List of user's domains with full details
+   * @param query.page - Page number (default 1)
+   * @param query.pageSize - Items per page (default 20, max 100)
+   * @returns List of user's domains with full details and pagination info
    */
-  .get("/mine", ({ cookie }) => {
-    const user = getAuthUser(cookie.session.value as string | undefined);
-    if (!user) {
-      return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
-    }
+  .get(
+    "/mine",
+    ({ cookie, query }) => {
+      const user = getAuthUser(cookie.session.value as string | undefined);
+      if (!user) {
+        return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
+      }
 
-    const domains = domainRepository.findByUserId(user.id);
-    return {
-      success: true,
-      domains: domains.map((d) => ({
-        id: d.id,
-        name: d.name,
-        txtRecord: d.txt_record,
-        verified: d.verified === 1,
-        verifiedBy: d.verified_by,
-        visibility: d.visibility,
-        autoDiscovered: d.auto_discovered === 1,
-        allowedUsers: domainRepository.findAllowedUsers(d.id).length,
-        createdAt: d.created_at,
-      })),
-    };
-  })
+      // Pagination
+      const page = Math.max(1, query.page || 1);
+      const pageSize = Math.min(LIMITS.MAX_DOMAINS_PER_PAGE, Math.max(1, query.pageSize || 20));
+      const offset = (page - 1) * pageSize;
+
+      const domains = domainRepository.findByUserId(user.id, pageSize, offset);
+      const total = domainRepository.countByUserId(user.id);
+      const totalPages = Math.ceil(total / pageSize);
+
+      return {
+        success: true,
+        pagination: {
+          page,
+          pageSize,
+          total,
+          totalPages,
+          hasMore: page < totalPages,
+        },
+        domains: domains.map((d) => ({
+          id: d.id,
+          name: d.name,
+          txtRecord: d.txt_record,
+          verified: d.verified === 1,
+          verifiedBy: d.verified_by,
+          visibility: d.visibility,
+          autoDiscovered: d.auto_discovered === 1,
+          allowedUsers: domainRepository.findAllowedUsers(d.id).length,
+          createdAt: d.created_at,
+        })),
+      };
+    },
+    {
+      query: t.Object({
+        page: t.Optional(t.Number()),
+        pageSize: t.Optional(t.Number()),
+      }),
+    }
+  )
 
   // ============================================================================
   // Add Domain

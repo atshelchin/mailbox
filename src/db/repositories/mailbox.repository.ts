@@ -12,12 +12,13 @@ import type { Mailbox, MailboxWithDomain, Domain } from "../../types";
 // ============================================================================
 
 const statements = {
-  findByUserId: db.prepare<MailboxWithDomain, [string]>(`
+  findByUserIdPaginated: db.prepare<MailboxWithDomain, [string, number, number]>(`
     SELECT m.*, d.name as domain_name
     FROM mailboxes m
     JOIN domains d ON m.domain_id = d.id
     WHERE m.user_id = ?
     ORDER BY m.created_at DESC
+    LIMIT ? OFFSET ?
   `),
   findById: db.prepare<MailboxWithDomain, [string]>(`
     SELECT m.*, d.name as domain_name
@@ -56,12 +57,14 @@ const statements = {
  */
 export const mailboxRepository = {
   /**
-   * Find all mailboxes for a user
+   * Find mailboxes for a user with pagination
    * @param userId - The user ID
+   * @param limit - Number of mailboxes per page (default 20)
+   * @param offset - Number of mailboxes to skip (default 0)
    * @returns Array of mailboxes with domain info
    */
-  findByUserId(userId: string): MailboxWithDomain[] {
-    return statements.findByUserId.all(userId);
+  findByUserId(userId: string, limit: number = 20, offset: number = 0): MailboxWithDomain[] {
+    return statements.findByUserIdPaginated.all(userId, limit, offset);
   },
 
   /**

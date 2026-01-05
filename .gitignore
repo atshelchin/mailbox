@@ -48,3 +48,4 @@ package-lock.json
 .VSCodeCounter
 mailbox.db
 mailbox.db-*
+dist

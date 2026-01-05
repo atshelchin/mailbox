@@ -17,10 +17,10 @@
  * @module api/emails
  */
 
-import { Elysia } from "elysia";
+import { Elysia, t } from "elysia";
 import { getAuthUser } from "./auth";
 import { emailRepository } from "../db";
-import { ERROR_MESSAGES } from "../constants";
+import { ERROR_MESSAGES, LIMITS } from "../constants";
 
 // ============================================================================
 // Route Definitions
@@ -46,45 +46,68 @@ export const emailRoutes = new Elysia({ prefix: "/emails" })
    * Get emails in a mailbox
    * @route GET /api/emails/mailbox/:mailboxId
    * @param params.mailboxId - The mailbox ID
-   * @description Returns a list of emails in the specified mailbox,
-   * sorted by received date (newest first). Limited to 100 emails.
-   * @returns List of emails with metadata
+   * @param query.page - Page number (default 1)
+   * @param query.pageSize - Items per page (default 20, max 100)
+   * @description Returns a paginated list of emails in the specified mailbox,
+   * sorted by received date (newest first).
+   * @returns Paginated list of emails with metadata
    */
-  .get("/mailbox/:mailboxId", ({ params, cookie }) => {
-    const user = getAuthUser(cookie.session.value as string | undefined);
-    if (!user) {
-      return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
+  .get(
+    "/mailbox/:mailboxId",
+    ({ params, query, cookie }) => {
+      const user = getAuthUser(cookie.session.value as string | undefined);
+      if (!user) {
+        return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
+      }
+
+      const mailbox = emailRepository.getMailboxById(params.mailboxId);
+      if (!mailbox) {
+        return { success: false, error: ERROR_MESSAGES.MAILBOX_NOT_FOUND };
+      }
+
+      if (mailbox.user_id !== user.id) {
+        return { success: false, error: ERROR_MESSAGES.NOT_YOUR_MAILBOX };
+      }
+
+      // Pagination
+      const page = Math.max(1, query.page || 1);
+      const pageSize = Math.min(LIMITS.MAX_EMAILS_PER_PAGE, Math.max(1, query.pageSize || 20));
+      const offset = (page - 1) * pageSize;
+
+      const emails = emailRepository.findByMailboxId(params.mailboxId, pageSize, offset);
+      const total = emailRepository.countByMailboxId(params.mailboxId);
+      const totalPages = Math.ceil(total / pageSize);
+
+      return {
+        success: true,
+        mailbox: {
+          id: mailbox.id,
+          address: `${mailbox.local_part}@${mailbox.domain_name}`,
+        },
+        pagination: {
+          page,
+          pageSize,
+          total,
+          totalPages,
+          hasMore: page < totalPages,
+        },
+        emails: emails.map((e) => ({
+          id: e.id,
+          from: e.from_address,
+          to: e.to_address,
+          subject: e.subject || "(No Subject)",
+          size: e.size,
+          receivedAt: e.received_at,
+        })),
+      };
+    },
+    {
+      query: t.Object({
+        page: t.Optional(t.Number()),
+        pageSize: t.Optional(t.Number()),
+      }),
     }
-
-    const mailbox = emailRepository.getMailboxById(params.mailboxId);
-    if (!mailbox) {
-      return { success: false, error: ERROR_MESSAGES.MAILBOX_NOT_FOUND };
-    }
-
-    if (mailbox.user_id !== user.id) {
-      return { success: false, error: ERROR_MESSAGES.NOT_YOUR_MAILBOX };
-    }
-
-    const emails = emailRepository.findByMailboxId(params.mailboxId);
-    const total = emailRepository.countByMailboxId(params.mailboxId);
-
-    return {
-      success: true,
-      mailbox: {
-        id: mailbox.id,
-        address: `${mailbox.local_part}@${mailbox.domain_name}`,
-      },
-      total,
-      emails: emails.map((e) => ({
-        id: e.id,
-        from: e.from_address,
-        to: e.to_address,
-        subject: e.subject || "(No Subject)",
-        size: e.size,
-        receivedAt: e.received_at,
-      })),
-    };
-  })
+  )
 
   // ============================================================================
   // Get Email Details

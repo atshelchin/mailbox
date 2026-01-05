@@ -20,8 +20,11 @@ const statements = {
   findPublic: db.prepare<Domain, []>(
     "SELECT * FROM domains WHERE (is_official = 1 OR verified = 1) AND visibility = 2 ORDER BY is_official DESC, name ASC"
   ),
-  findByUserId: db.prepare<Domain, [string]>(
-    "SELECT * FROM domains WHERE user_id = ? ORDER BY created_at DESC"
+  findByUserIdPaginated: db.prepare<Domain, [string, number, number]>(
+    "SELECT * FROM domains WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?"
+  ),
+  countByUserId: db.prepare<{ count: number }, [string]>(
+    "SELECT COUNT(*) as count FROM domains WHERE user_id = ?"
   ),
   findById: db.prepare<Domain, [string]>("SELECT * FROM domains WHERE id = ?"),
   findByName: db.prepare<Domain, [string]>(
@@ -112,12 +115,24 @@ export const domainRepository = {
   },
 
   /**
-   * Find all domains owned by a user
+   * Find domains owned by a user with pagination
    * @param userId - The user ID
+   * @param limit - Number of domains per page (default 20)
+   * @param offset - Number of domains to skip (default 0)
    * @returns Array of domains
    */
-  findByUserId(userId: string): Domain[] {
-    return statements.findByUserId.all(userId);
+  findByUserId(userId: string, limit: number = 20, offset: number = 0): Domain[] {
+    return statements.findByUserIdPaginated.all(userId, limit, offset);
+  },
+
+  /**
+   * Count domains owned by a user
+   * @param userId - The user ID
+   * @returns The count
+   */
+  countByUserId(userId: string): number {
+    const result = statements.countByUserId.get(userId);
+    return result?.count ?? 0;
   },
 
   /**
@@ -224,7 +239,7 @@ export const domainRepository = {
    * @returns True if user is allowed
    */
   isUserAllowed(domainId: string, userId: string): boolean {
-    return statements.findAllowedUser.get(domainId, userId) !== undefined;
+    return statements.findAllowedUser.get(domainId, userId) != null;
   },
 
   /**

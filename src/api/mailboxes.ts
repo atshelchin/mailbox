@@ -48,27 +48,53 @@ export const mailboxRoutes = new Elysia({ prefix: "/mailboxes" })
   /**
    * Get user's mailboxes
    * @route GET /api/mailboxes
-   * @description Returns all mailboxes owned by the current user.
-   * @returns List of mailboxes with full email addresses
+   * @description Returns mailboxes owned by the current user with pagination.
+   * @param query.page - Page number (default 1)
+   * @param query.pageSize - Items per page (default 20, max 100)
+   * @returns List of mailboxes with full email addresses and pagination info
    */
-  .get("/", ({ cookie }) => {
-    const user = getAuthUser(cookie.session.value as string | undefined);
-    if (!user) {
-      return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
-    }
+  .get(
+    "/",
+    ({ cookie, query }) => {
+      const user = getAuthUser(cookie.session.value as string | undefined);
+      if (!user) {
+        return { success: false, error: ERROR_MESSAGES.UNAUTHORIZED };
+      }
 
-    const mailboxes = mailboxRepository.findByUserId(user.id);
-    return {
-      success: true,
-      mailboxes: mailboxes.map((m) => ({
-        id: m.id,
-        address: `${m.local_part}@${m.domain_name}`,
-        localPart: m.local_part,
-        domain: m.domain_name,
-        createdAt: m.created_at,
-      })),
-    };
-  })
+      // Pagination
+      const page = Math.max(1, query.page || 1);
+      const pageSize = Math.min(LIMITS.MAX_MAILBOXES_PER_PAGE, Math.max(1, query.pageSize || 20));
+      const offset = (page - 1) * pageSize;
+
+      const mailboxes = mailboxRepository.findByUserId(user.id, pageSize, offset);
+      const total = mailboxRepository.countByUserId(user.id);
+      const totalPages = Math.ceil(total / pageSize);
+
+      return {
+        success: true,
+        pagination: {
+          page,
+          pageSize,
+          total,
+          totalPages,
+          hasMore: page < totalPages,
+        },
+        mailboxes: mailboxes.map((m) => ({
+          id: m.id,
+          address: `${m.local_part}@${m.domain_name}`,
+          localPart: m.local_part,
+          domain: m.domain_name,
+          createdAt: m.created_at,
+        })),
+      };
+    },
+    {
+      query: t.Object({
+        page: t.Optional(t.Number()),
+        pageSize: t.Optional(t.Number()),
+      }),
+    }
+  )
 
   // ============================================================================
   // Register Mailbox

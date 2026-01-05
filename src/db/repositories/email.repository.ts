@@ -6,7 +6,6 @@
 
 import { db } from "../connection";
 import type { Email, Attachment, MailboxWithDomain } from "../../types";
-import { LIMITS } from "../../constants";
 
 // ============================================================================
 // Prepared Statements
@@ -21,13 +20,13 @@ const statements = {
     WHERE m.id = ?
   `),
 
-  // Email queries
-  findByMailboxId: db.prepare<Email, [string]>(`
+  // Email queries (with pagination)
+  findByMailboxIdPaginated: db.prepare<Email, [string, number, number]>(`
     SELECT id, mailbox_id, from_address, to_address, subject, size, received_at
     FROM emails
     WHERE mailbox_id = ?
     ORDER BY received_at DESC
-    LIMIT ${LIMITS.MAX_EMAILS_PER_PAGE}
+    LIMIT ? OFFSET ?
   `),
   findById: db.prepare<Email, [string]>(
     "SELECT * FROM emails WHERE id = ?"
@@ -79,12 +78,14 @@ export const emailRepository = {
   },
 
   /**
-   * Find emails for a mailbox
+   * Find emails for a mailbox with pagination
    * @param mailboxId - The mailbox ID
-   * @returns Array of emails (limited to MAX_EMAILS_PER_PAGE)
+   * @param limit - Number of emails per page (default 20)
+   * @param offset - Number of emails to skip (default 0)
+   * @returns Array of emails
    */
-  findByMailboxId(mailboxId: string): Email[] {
-    return statements.findByMailboxId.all(mailboxId);
+  findByMailboxId(mailboxId: string, limit: number = 20, offset: number = 0): Email[] {
+    return statements.findByMailboxIdPaginated.all(mailboxId, limit, offset);
   },
 
   /**

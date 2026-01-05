@@ -31,6 +31,12 @@ import { domainRepository, emailRepository } from "../db";
 import { findMailboxByAddress } from "../api/mailboxes";
 import { ERROR_MESSAGES } from "../constants";
 import { verifyMxRecord } from "../utils/dns";
+import {
+  checkConnection,
+  checkSender,
+  trackConnectionOpen,
+  trackConnectionClose,
+} from "./antispam";
 
 // ============================================================================
 // Types
@@ -211,9 +217,16 @@ export function createSMTPServer(): SMTPServer {
 
     /**
      * Validate sender address
-     * @description Accepts all senders - we don't restrict who can send to us
+     * @description Checks sender against anti-spam rules (rate limits, MX validation)
      */
-    onMailFrom(address, session, callback) {
+    async onMailFrom(address, session, callback) {
+      // Get recipient domain from first RCPT TO (if available) for greylist check
+      // At this point we don't have recipients yet, so we skip that check here
+      const senderCheck = await checkSender(address.address, "");
+      if (!senderCheck.allowed) {
+        console.log(`Sender rejected: ${address.address} - ${senderCheck.reason}`);
+        return callback(new Error(senderCheck.reason || "Sender rejected"));
+      }
       callback();
     },
 
@@ -309,19 +322,32 @@ export function createSMTPServer(): SMTPServer {
 
     /**
      * Connection opened handler
-     * @description Logs new SMTP connections
+     * @description Checks connection against anti-spam rules and logs connection
      */
-    onConnect(session, callback) {
-      console.log(`SMTP connection from ${session.remoteAddress}`);
+    async onConnect(session, callback) {
+      const ip = session.remoteAddress || "unknown";
+      console.log(`SMTP connection from ${ip}`);
+
+      // Check connection against anti-spam rules
+      const connectionCheck = await checkConnection(ip);
+      if (!connectionCheck.allowed) {
+        console.log(`Connection rejected from ${ip}: ${connectionCheck.reason}`);
+        return callback(new Error(connectionCheck.reason || "Connection rejected"));
+      }
+
+      // Track connection for concurrent limit
+      trackConnectionOpen(ip);
       callback();
     },
 
     /**
      * Connection closed handler
-     * @description Logs closed SMTP connections
+     * @description Logs closed SMTP connections and updates tracking
      */
     onClose(session) {
-      console.log(`SMTP connection closed from ${session.remoteAddress}`);
+      const ip = session.remoteAddress || "unknown";
+      console.log(`SMTP connection closed from ${ip}`);
+      trackConnectionClose(ip);
     },
   });
 

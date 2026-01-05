@@ -89,6 +89,10 @@ export const LIMITS = {
   MAX_MAILBOXES_PER_USER: 100,
   /** Maximum emails returned in a list query */
   MAX_EMAILS_PER_PAGE: 100,
+  /** Maximum mailboxes returned in a list query */
+  MAX_MAILBOXES_PER_PAGE: 100,
+  /** Maximum domains returned in a list query */
+  MAX_DOMAINS_PER_PAGE: 100,
   /** Challenge expiration time in seconds (5 minutes) */
   CHALLENGE_EXPIRATION_SECONDS: 300,
 } as const;
