@@ -9,15 +9,20 @@ services:
     volumes:
       - mailbox-data:/data
     environment:
+      - NODE_ENV=production
       - SERVICE_DOMAIN=${SERVICE_DOMAIN}
       - OFFICIAL_DOMAINS=${OFFICIAL_DOMAINS}
+      - MX_TARGET_HOST=${MX_TARGET_HOST}
       - RP_NAME=${RP_NAME}
       - RP_ID=${RP_ID}
       - ORIGIN=${ORIGIN}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS}
+      - CORS_ORIGINS=${CORS_ORIGINS}
       - MAX_EMAIL_SIZE=${MAX_EMAIL_SIZE:-104857600}
       - EMAIL_RETENTION_HOURS=${EMAIL_RETENTION_HOURS:-24}
       - SESSION_SECRET=${SESSION_SECRET}
       - SESSION_MAX_AGE=${SESSION_MAX_AGE:-604800000}
+      - DB_PATH=/data/mailbox.db
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5005/health"]
       interval: 30s
