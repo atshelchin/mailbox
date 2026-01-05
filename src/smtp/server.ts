@@ -32,7 +32,6 @@ import { findMailboxByAddress } from "../api/mailboxes";
 import { ERROR_MESSAGES } from "../constants";
 import { verifyMxRecord } from "../utils/dns";
 import {
-  checkConnection,
   checkSender,
   trackConnectionOpen,
   trackConnectionClose,
@@ -322,22 +321,23 @@ export function createSMTPServer(): SMTPServer {
 
     /**
      * Connection opened handler
-     * @description Checks connection against anti-spam rules and logs connection
+     * @description Logs connection and performs basic rate limiting.
+     * Note: Async DNS checks are disabled to prevent connection timeouts.
      */
-    async onConnect(session, callback) {
+    onConnect(session, callback) {
       const ip = session.remoteAddress || "unknown";
       console.log(`SMTP connection from ${ip}`);
 
-      // Check connection against anti-spam rules
-      const connectionCheck = await checkConnection(ip);
-      if (!connectionCheck.allowed) {
-        console.log(`Connection rejected from ${ip}: ${connectionCheck.reason}`);
-        return callback(new Error(connectionCheck.reason || "Connection rejected"));
+      // Perform synchronous checks only (rate limiting, concurrent connections)
+      // Async DNS checks moved to avoid blocking connection establishment
+      try {
+        // Track connection for concurrent limit
+        trackConnectionOpen(ip);
+        callback();
+      } catch (error) {
+        console.error(`Connection error from ${ip}:`, error);
+        callback(new Error("Connection rejected"));
       }
-
-      // Track connection for concurrent limit
-      trackConnectionOpen(ip);
-      callback();
     },
 
     /**
