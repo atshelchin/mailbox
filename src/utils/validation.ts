@@ -6,7 +6,7 @@
  */
 
 import type { ValidationResult } from "../types";
-import { LOCAL_PART, DOMAIN, USERNAME, RESERVED_LOCAL_PARTS } from "../constants";
+import { LOCAL_PART, DOMAIN, USERNAME } from "../constants";
 
 // ============================================================================
 // Email Local Part Validation
@@ -62,9 +62,10 @@ export function validateLocalPart(localPart: string): ValidationResult {
     return { valid: false, error: "Local part cannot contain consecutive dots" };
   }
 
-  if (RESERVED_LOCAL_PARTS.includes(localPart.toLowerCase() as typeof RESERVED_LOCAL_PARTS[number])) {
-    return { valid: false, error: "This email address is reserved" };
-  }
+  // Reserved local parts check disabled
+  // if (RESERVED_LOCAL_PARTS.includes(localPart.toLowerCase() as typeof RESERVED_LOCAL_PARTS[number])) {
+  //   return { valid: false, error: "This email address is reserved" };
+  // }
 
   return { valid: true };
 }
