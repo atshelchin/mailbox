@@ -111,9 +111,9 @@ export const mailboxRoutes = new Elysia({ prefix: "/mailboxes" })
         return { success: false, error: ERROR_MESSAGES.DOMAIN_NOT_VERIFIED };
       }
 
-      // For custom domains, only owner can create mailboxes
-      if (domain.user_id && domain.user_id !== user.id) {
-        return { success: false, error: ERROR_MESSAGES.OWN_DOMAIN_ONLY };
+      // Check if user can create mailboxes on this domain
+      if (!domainRepository.canUserCreateMailbox(domain, user.id)) {
+        return { success: false, error: ERROR_MESSAGES.DOMAIN_ACCESS_DENIED };
       }
 
       // Check user mailbox limit

@@ -141,6 +141,10 @@ export const ERROR_MESSAGES = {
   CANNOT_DELETE_OFFICIAL: "Cannot delete official domain",
   NOT_YOUR_DOMAIN: "Not your domain",
   TXT_RECORD_NOT_FOUND: "TXT record not found. Please make sure you have added the TXT record and wait for DNS propagation.",
+  MX_RECORD_NOT_FOUND: "MX record not found. Please make sure your MX record points to our mail server and wait for DNS propagation.",
+  DOMAIN_ACCESS_DENIED: "You don't have permission to create mailboxes on this domain",
+  USER_ALREADY_ALLOWED: "User is already allowed on this domain",
+  USER_NOT_ALLOWED: "User is not in the allowed list",
 
   // Mailboxes
   MAILBOX_NOT_FOUND: "Mailbox not found",

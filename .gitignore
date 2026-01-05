@@ -45,3 +45,6 @@ yarn-error.log*
 **/*.log
 package-lock.json
 **/*.bun
+.VSCodeCounter
+mailbox.db
+mailbox.db-*

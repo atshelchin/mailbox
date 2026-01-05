@@ -83,6 +83,19 @@ export interface SessionWithUser extends Session {
 }
 
 /**
+ * Domain visibility levels
+ * @description Controls who can create mailboxes on a domain
+ */
+export enum DomainVisibility {
+  /** Only the domain owner can create mailboxes */
+  Private = 0,
+  /** Only specified users can create mailboxes */
+  Partial = 1,
+  /** Anyone can create mailboxes */
+  Public = 2,
+}
+
+/**
  * Email domain entity
  * @description Represents both official and user-added custom domains
  */
@@ -91,15 +104,36 @@ export interface Domain {
   id: string;
   /** Fully qualified domain name (lowercase) */
   name: string;
-  /** Owner user ID (null for official domains) */
+  /** Owner user ID (null for official or auto-discovered public domains) */
   user_id: string | null;
   /** TXT record value for domain verification */
   txt_record: string | null;
   /** Whether the domain ownership is verified (0 or 1) */
   verified: number;
+  /** How the domain was verified: 'txt' or 'mx' */
+  verified_by: string | null;
   /** Whether this is an official/system domain (0 or 1) */
   is_official: number;
+  /** Domain visibility: 0=private, 1=partial, 2=public */
+  visibility: number;
+  /** Whether the domain was auto-discovered via MX record */
+  auto_discovered: number;
   /** Unix timestamp of domain creation */
+  created_at: number;
+}
+
+/**
+ * Domain allowed user entity
+ * @description Users allowed to create mailboxes on partial visibility domains
+ */
+export interface DomainAllowedUser {
+  /** Unique identifier */
+  id: string;
+  /** Reference to the domain */
+  domain_id: string;
+  /** Reference to the allowed user */
+  user_id: string;
+  /** Unix timestamp of creation */
   created_at: number;
 }
 

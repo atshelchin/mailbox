@@ -30,6 +30,7 @@ import { config } from "../config";
 import { domainRepository, emailRepository } from "../db";
 import { findMailboxByAddress } from "../api/mailboxes";
 import { ERROR_MESSAGES } from "../constants";
+import { verifyMxRecord } from "../utils/dns";
 
 // ============================================================================
 // Types
@@ -218,16 +219,36 @@ export function createSMTPServer(): SMTPServer {
 
     /**
      * Validate recipient address
-     * @description Checks if the recipient has a registered mailbox
+     * @description Checks if the recipient has a registered mailbox.
+     * If domain is unknown but MX points to us, auto-discover and register it.
      */
-    onRcptTo(address, session, callback) {
+    async onRcptTo(address, session, callback) {
       const addr = parseEmailAddress(address.address);
       if (!addr) {
         return callback(new Error(ERROR_MESSAGES.INVALID_RECIPIENT));
       }
 
-      // Check if domain is available
-      if (!domainRepository.isAvailable(addr.domain)) {
+      // Check if domain exists
+      let domain = domainRepository.findByName(addr.domain);
+
+      // Auto-discovery: if domain doesn't exist, check if MX points to us
+      if (!domain) {
+        try {
+          const mxPointsToUs = await verifyMxRecord(addr.domain);
+          if (mxPointsToUs) {
+            // Auto-create the domain as public (visibility = 2)
+            const domainId = crypto.randomUUID();
+            domainRepository.createAutoDiscovered(domainId, addr.domain);
+            domain = domainRepository.findByName(addr.domain);
+            console.log(`Auto-discovered domain: ${addr.domain}`);
+          }
+        } catch (error) {
+          console.error(`MX verification failed for ${addr.domain}:`, error);
+        }
+      }
+
+      // Check if domain is available (exists and verified/official)
+      if (!domain || (domain.is_official !== 1 && domain.verified !== 1)) {
         return callback(new Error(ERROR_MESSAGES.DOMAIN_NOT_FOUND));
       }
 
